@@ -9,13 +9,15 @@ from telegram.ext import (
 )
 
 from config import TELEGRAM_TOKEN
-from news import search_news
+from app.news import search_news
 from storage import get_keywords, add_keyword, remove_keyword
+from app.rss.rss_fetcher import fetch_new_articles
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = (
-        "Leafletter News Bot 입니다.\n"
+        "안녕하세요.\n"
+        "성장판 독서모임의 Leafletter News Bot 입니다.\n"
         "검색할 키워드나 종목/이슈를 보내면 관련 뉴스를 찾아드립니다.\n\n"
         "기능 안내:\n"
         "- 그냥 텍스트: 해당 키워드로 뉴스 검색\n"
@@ -26,7 +28,10 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "예시)\n"
         "/add 비트코인 뉴스\n"
         "/add FOMC 회의\n"
-        "/scan"
+        "/scan\n\n"
+        
+        "추가 기능 안내:\n"
+        "- /rss_now    : RSS에서 새로 들어온 기사 확인\n"
     )
     await update.message.reply_text(text)
 
@@ -119,6 +124,21 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     result = search_news(query)
     await update.message.reply_text(result)
 
+# ---- RSS ----
+async def rss_now(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try:
+        articles = fetch_new_articles()
+    except Exception as e:
+        # 사용자에게는 간단히 안내
+        await update.message.reply_text("RSS를 불러오는 중 오류가 발생했습니다. 잠시 후 다시 시도해주세요.")
+        # 개발용 로그 (나중에 logging 모듈로 바꿔도 좋습니다)
+        print(f"[rss_now] fetch_new_articles error: {e}")
+        return
+
+    if not articles:
+        await update.message.reply_text("새로운 RSS 기사가 없습니다.")
+        return
+
 
 def main():
     app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
@@ -135,7 +155,13 @@ def main():
     # 일반 텍스트 → 뉴스 검색
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
 
+    # RSS 수집기
+    app.add_handler(CommandHandler("rss_now", rss_now))
+
     app.run_polling()
+
+
+
 
 
 if __name__ == "__main__":

@@ -3,7 +3,7 @@ import json
 from pathlib import Path
 
 # 프로젝트 루트 기준 파일 이름
-DATA_FILE = Path("watchlist.json")
+DATA_FILE = Path("../data/watchlist.json")
 
 
 def _load_data() -> dict:

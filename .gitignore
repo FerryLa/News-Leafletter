@@ -22,4 +22,5 @@ env/
 config.py
 
 # other
-watchlist.json
+data/watchlist.json
+data/rss_state.json
