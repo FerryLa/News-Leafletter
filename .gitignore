@@ -20,3 +20,6 @@ env/
 
 # Local config with secrets (tokens, API keys)
 config.py
+
+# other
+watchlist.json
