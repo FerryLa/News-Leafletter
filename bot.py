@@ -15,7 +15,7 @@ from app.storage import get_keywords, add_keyword, remove_keyword
 from app.rss.rss_fetcher import fetch_new_articles
 
 # RSS 자동 알림 주기 (초 단위)
-AUTO_INTERVAL = 60  # 테스트할 때만 10으로 줄여서 써도 됨
+AUTO_INTERVAL = 10  # 테스트할 때만 10으로 줄여서 써도 됨
 
 # chat_id -> asyncio.Task 매핑
 rss_tasks: dict[int, asyncio.Task] = {}
