@@ -17,14 +17,10 @@ from config import TELEGRAM_TOKEN
 from app.news import search_news
 from app.storage import get_keywords, add_keyword, remove_keyword
 from app.rss.rss_fetcher import fetch_new_articles
+from app.super_controller import super_controller
 
 # ------------------ 뉴스 스코어링 관련 ----------------
 from app.scoring.keyword_scoring import score_and_filter_articles_for_chat
-
-
-
-# RSS 자동 알림 주기 (초 단위)
-AUTO_INTERVAL = 10  # 테스트할 때만 10으로 줄여서 써도 됨
 
 # chat_id -> asyncio.Task 매핑
 rss_tasks: dict[int, asyncio.Task] = {}
@@ -32,26 +28,7 @@ rss_tasks: dict[int, asyncio.Task] = {}
 # ---------------- 기본 안내 ----------------
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = (
-        "Leafletter News Bot 입니다.\n"
-        "검색할 키워드나 종목/이슈를 보내면 관련 뉴스를 찾아드립니다.\n\n"
-        "기능 안내:\n"
-        "- 텍스트 입력    : 해당 키워드로 뉴스 검색 (키워드 스코어링 적용)\n"
-        "- /add 키워드    : 관심 키워드(+1) 또는 제외 키워드(-1) 추가\n"
-        "- /list          : 관심 키워드 목록 보기\n"
-        "- /del 키워드    : 관심 키워드 삭제\n"
-        "- /scan          : 모든 관심 키워드 뉴스 한 번에 조회\n\n"
-        "키워드 스코어링 규칙:\n"
-        "- /add 비트코인 뉴스  -> '비트코인 뉴스' +1점\n"
-        "- /add -밈코인        -> '밈코인' 포함 기사 -1점\n"
-        "검색/알림 결과는 예시처럼 점수와 함께 표시됩니다.\n"
-        "  • [+3] 비트코인 ETF 승인 임박\n"
-        "  • [-1] 밈코인 단기 급등 기사\n\n"
-        "추가 기능 안내 (RSS):\n"
-        "- /rss_now       : RSS에서 새로 들어온 기사 수동 확인\n"
-        "- /rss_auto_on   : RSS 자동 알림 시작\n"
-        "- /rss_auto_off  : RSS 자동 알림 중지\n\n"
-    )
+    text = super_controller.get_start_message()
     await update.message.reply_text(text)
     await update.message.reply_text(text)
 
@@ -184,15 +161,18 @@ async def rss_auto_loop(chat_id: int, bot):
     """
     특정 chat_id에 대해 주기적으로 RSS를 확인하고 결과를 보내는 루프.
     /rss_auto_on 에서 task 생성 직후 바로 메시지가 안 나오게,
-    처음 한 번은 AUTO_INTERVAL 만큼 기다렸다가 체크한다.
+    설정된 주기만큼 기다렸다가 체크한다.
     """
     try:
         # ✅ 처음 바로 메시지 안 나가게, 한 번 기다렸다가 시작
-        await asyncio.sleep(AUTO_INTERVAL)
+        interval = super_controller.get_rss_auto_interval()
+        await asyncio.sleep(interval)
 
         while True:
             articles = fetch_new_articles()
             now_str = datetime.now().strftime("%H:%M:%S")
+
+            interval = super_controller.get_rss_auto_interval()
 
             if articles:
                 scored = score_and_filter_articles_for_chat(articles, chat_id)
@@ -210,10 +190,10 @@ async def rss_auto_loop(chat_id: int, bot):
             else:
                 await bot.send_message(
                     chat_id=chat_id,
-                    text=f"🔁 {now_str} 기준 새 RSS 기사 없음 (주기 {AUTO_INTERVAL}초 체크 중)",
+                    text=f"🔁 {now_str} 기준 새 RSS 기사 없음 (주기 {interval}초 체크 중)",
                 )
 
-            await asyncio.sleep(AUTO_INTERVAL)
+            await asyncio.sleep(interval)
     except asyncio.CancelledError:
         return
 
@@ -232,8 +212,9 @@ async def rss_auto_on(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     rss_tasks[chat_id] = task
 
+    interval = super_controller.get_rss_auto_interval()
     await update.message.reply_text(
-        f"⏱ RSS 자동 알림을 {AUTO_INTERVAL}초 간격으로 시작합니다."
+        f"⏱ RSS 자동 알림을 {interval}초 간격으로 시작합니다."
     )
 
 

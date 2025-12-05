@@ -9,6 +9,14 @@ RSS 기반으로 새로 올라오는 기사도 자동으로 감시해서 텔레�
 
 ---
 
+## 설정 관리 (super_controller)
+
+- `app/super_controller.py`가 `data/config.json`을 읽어 **화이트/블랙리스트, 점수 규칙, 어드민 키워드, 뉴스/ RSS/봇 동작 설정**을 한 곳에서 관리합니다.
+- 각 필터/점수 규칙은 `enabled` 플래그로 On/Off 할 수 있으며, 설정을 수정한 뒤 `reload()` 메서드로 핫리로드 확장도 가능합니다.
+- 기본 설정 예시는 `data/config.json`에 포함되어 있으며, 기존 `data/admin_keywords.json`과 `data/keyword_filters.json` 내용도 자동으로 병합되는 방식으로 동작합니다.
+
+---
+
 ## 기능 요약
 
 - **키워드 기반 뉴스 검색 & 스코어링**
