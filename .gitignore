@@ -1,0 +1,26 @@
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual env
+venv/
+env/
+.venv/
+
+# IDE
+.idea/
+.vscode/
+
+# Logs
+*.log
+
+# OS garbage
+.DS_Store
+
+# Local config with secrets (tokens, API keys)
+config.py
+
+# other
+data/watchlist.json
+data/rss_state.json

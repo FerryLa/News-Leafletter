@@ -1,0 +1,14 @@
+{
+  "whitelist": [],
+  "blacklist": ["광고", "sponsored"],
+  "score_rules": {
+    "min_score": {
+      "enabled": false,
+      "value": 10
+    },
+    "exclude_scores": {
+      "enabled": false,
+      "values": [-1]
+    }
+  }
+}
