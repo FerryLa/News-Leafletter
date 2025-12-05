@@ -1,4 +1,8 @@
 # app/bot.py
+# 알람주기, 안내, 각종 커맨드, RSS스케줄링, 일반 텍스트 검색 등
+# main 실행 함수
+
+
 from telegram import Update
 from telegram.ext import (
     ApplicationBuilder,
@@ -14,6 +18,11 @@ from app.news import search_news
 from app.storage import get_keywords, add_keyword, remove_keyword
 from app.rss.rss_fetcher import fetch_new_articles
 
+# ------------------ 뉴스 스코어링 관련 ----------------
+from app.scoring.keyword_scoring import score_and_filter_articles_for_chat
+
+
+
 # RSS 자동 알림 주기 (초 단위)
 AUTO_INTERVAL = 10  # 테스트할 때만 10으로 줄여서 써도 됨
 
@@ -22,29 +31,28 @@ rss_tasks: dict[int, asyncio.Task] = {}
 
 # ---------------- 기본 안내 ----------------
 
-
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = (
         "Leafletter News Bot 입니다.\n"
         "검색할 키워드나 종목/이슈를 보내면 관련 뉴스를 찾아드립니다.\n\n"
         "기능 안내:\n"
-        "- 텍스트 입력  : 해당 키워드로 뉴스 검색\n"
-        "- /add 키워드  : 관심 키워드 추가\n"
-        "- /list        : 관심 키워드 목록 보기\n"
-        "- /del 키워드  : 관심 키워드 삭제\n"
-        "- /scan        : 모든 관심 키워드 뉴스 한 번에 조회\n\n"
-
-        "예시)\n"
-        "/add 비트코인 뉴스\n"
-        "/add FOMC 회의\n"
-        "/scan\n\n"
-        
-        "추가 기능 안내:\n"
-        "- /rss_now     : RSS에서 새로 들어온 기사 수동 확인\n"
-        "- /rss_auto_on : RSS 자동 알림 시작\n"
-        "- /rss_auto_off: RSS 자동 알림 중지\n\n"
-
+        "- 텍스트 입력    : 해당 키워드로 뉴스 검색 (키워드 스코어링 적용)\n"
+        "- /add 키워드    : 관심 키워드(+1) 또는 제외 키워드(-1) 추가\n"
+        "- /list          : 관심 키워드 목록 보기\n"
+        "- /del 키워드    : 관심 키워드 삭제\n"
+        "- /scan          : 모든 관심 키워드 뉴스 한 번에 조회\n\n"
+        "키워드 스코어링 규칙:\n"
+        "- /add 비트코인 뉴스  -> '비트코인 뉴스' +1점\n"
+        "- /add -밈코인        -> '밈코인' 포함 기사 -1점\n"
+        "검색/알림 결과는 예시처럼 점수와 함께 표시됩니다.\n"
+        "  • [+3] 비트코인 ETF 승인 임박\n"
+        "  • [-1] 밈코인 단기 급등 기사\n\n"
+        "추가 기능 안내 (RSS):\n"
+        "- /rss_now       : RSS에서 새로 들어온 기사 수동 확인\n"
+        "- /rss_auto_on   : RSS 자동 알림 시작\n"
+        "- /rss_auto_off  : RSS 자동 알림 중지\n\n"
     )
+    await update.message.reply_text(text)
     await update.message.reply_text(text)
 
 
@@ -126,15 +134,21 @@ async def scan_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
     for kw in keywords:
-        result = search_news(kw)
-        header = f"🔎 [{kw}] 관련 뉴스"
-        await update.message.reply_text(f"{header}\n\n{result}")
+        # 검색용 쿼리: 맨 앞의 '-'는 떼고 사용 (유저 마이너스 키워드 대비)
+        query_kw = kw.lstrip("-").strip()
+        if not query_kw:
+            continue
 
+        result = search_news(query_kw, chat_id=chat_id)
+        header = f"🔎 [{kw}] 관련 뉴스" # 제목 [+5] 제목 (매쳬) 이런 형태로 전송
+        await update.message.reply_text(f"{header}\n\n{result}")
 
 # ---------------- RSS 수동 조회 ----------------
 
 
 async def rss_now(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.effective_chat.id
+
     await update.message.reply_text("RSS에서 새 기사를 확인 중입니다...")
 
     articles = fetch_new_articles()
@@ -143,13 +157,21 @@ async def rss_now(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("새로운 RSS 기사가 없습니다.")
         return
 
+    scored = score_and_filter_articles_for_chat(articles, chat_id)
+    if not scored:
+        await update.message.reply_text("필터/스코어 기준에 맞는 RSS 기사가 없습니다.")
+        return
+
     lines = []
-    for a in articles[:5]:
+    for sa in scored[:5]:
+        a = sa.article
         title = a.get("title", "제목 없음")
         link = a.get("link", "")
-        lines.append(f"• {title}\n{link}")
+        score = sa.score
+        lines.append(f"• [{score:+}] {title}\n{link}")
 
-    await update.message.reply_text("📰 새로 들어온 기사들:\n\n" + "\n\n".join(lines))
+    await update.message.reply_text("📰 새로 들어온 기사들 (점수순):\n\n" + "\n\n".join(lines))
+
 
 
 # ---------------- RSS 자동 스케줄링 (asyncio 기반) ----------------
@@ -173,11 +195,15 @@ async def rss_auto_loop(chat_id: int, bot):
             now_str = datetime.now().strftime("%H:%M:%S")
 
             if articles:
-                lines = []
-                for a in articles[:3]:
-                    title = a.get("title", "제목 없음")
-                    link = a.get("link", "")
-                    lines.append(f"• {title}\n{link}")
+                scored = score_and_filter_articles_for_chat(articles, chat_id)
+                if scored:
+                    lines = []
+                    for sa in scored[:3]:
+                        a = sa.article
+                        title = a.get("title", "제목 없음")
+                        link = a.get("link", "")
+                        score = sa.score
+                        lines.append(f"• [{score:+}] {title}\n{link}")
 
                 text = "🛰 새로 들어온 RSS 기사:\n\n" + "\n\n".join(lines)
                 await bot.send_message(chat_id=chat_id, text=text)
@@ -227,13 +253,14 @@ async def rss_auto_off(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.effective_chat.id
     query = (update.message.text or "").strip()
     if not query:
         await update.message.reply_text("검색어를 입력해주세요.")
         return
 
     await update.message.reply_text(f"🔎 검색어: {query}\n뉴스를 찾는 중입니다...")
-    result = search_news(query)
+    result = search_news(query, chat_id=chat_id)
     await update.message.reply_text(result)
 
 
