@@ -1,6 +1,7 @@
 # news.py
 import requests
 from config import NEWSAPI_KEY
+from app.super_controller import super_controller
 
 
 def search_news(query: str, chat_id: int | None = None) -> str:
@@ -14,7 +15,7 @@ def search_news(query: str, chat_id: int | None = None) -> str:
         "q": query,
         "language": "ko",          # 한국어 뉴스 위주. 필요하면 'en'으로 바꿔도 됨
         "sortBy": "publishedAt",
-        "pageSize": 10,         # 최대 10개 기사
+        "pageSize": super_controller.get_news_page_size(),
         "apiKey": NEWSAPI_KEY,
     }
 
