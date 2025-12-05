@@ -1,11 +1,23 @@
 {
+  "_comments": {
+    "whitelist": "화이트리스트가 켜져 있으면 값 중 하나라도 포함된 기사만 통과합니다.",
+    "blacklist": "블랙리스트가 켜져 있으면 값 중 하나라도 포함된 기사는 제외합니다.",
+    "score_rules": "min_score와 exclude_scores를 켜서 점수 기준을 적용할 수 있습니다.",
+    "admin_keywords": "관리자가 부여한 키워드 가중치로 기사 점수를 조정합니다 (대소문자 무시).",
+    "news": "뉴스 API 검색 시 사용할 최대 기사 수(page_size)입니다.",
+    "rss": "RSS 자동 알림을 반복 실행하는 간격(초)입니다.",
+    "bot": "텔레그램 /start 명령어에 출력할 기본 안내 메시지입니다."
+  },
   "whitelist": {
     "enabled": false,
     "values": []
   },
   "blacklist": {
     "enabled": true,
-    "values": ["광고", "sponsored"]
+    "values": [
+      "광고",
+      "sponsored"
+    ]
   },
   "score_rules": {
     "min_score": {
@@ -14,7 +26,9 @@
     },
     "exclude_scores": {
       "enabled": false,
-      "values": [-1]
+      "values": [
+        -1
+      ]
     }
   },
   "admin_keywords": {
