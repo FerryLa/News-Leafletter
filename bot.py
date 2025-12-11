@@ -30,7 +30,6 @@ rss_tasks: dict[int, asyncio.Task] = {}
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = super_controller.get_start_message()
     await update.message.reply_text(text)
-    await update.message.reply_text(text)
 
 
 # ---------------- 관심 키워드 관리 ----------------
