@@ -13,7 +13,7 @@ from telegram.ext import (
 import asyncio
 from datetime import datetime
 from config import TELEGRAM_TOKEN
-from app.news import search_news
+from app.news import search_news, get_news_with_images
 from app.storage import get_keywords, add_keyword, remove_keyword
 from app.rss.rss_fetcher import fetch_new_articles
 from app.super_controller import super_controller
@@ -119,9 +119,13 @@ async def scan_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not query_kw:
             continue
 
-        result = search_news(query_kw, chat_id=chat_id)
-        header = f"🔎 [{kw}] 관련 뉴스"
-        await update.message.reply_text(f"{header}\n\n{result}")
+        await update.message.reply_text(f"🔎 [{kw}] 관련 뉴스")
+        
+        # 이미지와 함께 뉴스 가져오기
+        news_items = get_news_with_images(query_kw, chat_id=chat_id)
+        
+        # 각 뉴스를 개별 메시지로 전송
+        await send_news_with_images(update, news_items)
 
 
 # ---------------- RSS 수동 조회 ----------------
@@ -147,17 +151,71 @@ async def rss_now(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # 클러스터링 (중복 제거)
     clustered = cluster_scored_articles(scored)
     
-    # 기존 포맷으로 출력 (대표 기사만)
-    lines = []
+    await update.message.reply_text("📰 새로 들어온 RSS 기사:")
+    
+    # 이미지와 함께 전송
+    news_items = []
     for cluster in clustered:
         main = cluster.main_article
         a = main.article
-        title = a.get("title", "제목 없음")
-        link = a.get("link", "")
-        score = main.score
-        lines.append(f"• [{score:+}] {title}\n{link}")
+        news_items.append({
+            'title': a.get("title", "제목 없음"),
+            'url': a.get("link", a.get("url", "")),
+            'image_url': a.get("urlToImage", ""),
+            'source': "",
+            'score': main.score
+        })
+    
+    await send_news_with_images(update, news_items)
 
-    await update.message.reply_text("📰 새로 들어온 기사들 (점수순):\n\n" + "\n\n".join(lines))
+
+# ---------------- 뉴스 이미지 전송 헬퍼 ----------------
+
+async def send_news_with_images(update: Update, news_items: list):
+    """
+    뉴스 목록을 이미지와 함께 개별 메시지로 전송
+    
+    Args:
+        update: Telegram Update 객체
+        news_items: [{'title', 'url', 'image_url', 'source', 'score'}, ...]
+    """
+    if not news_items:
+        await update.message.reply_text("표시할 뉴스가 없습니다.")
+        return
+    
+    for item in news_items:
+        title = item['title']
+        url = item['url']
+        image_url = item.get('image_url', '')
+        source = item.get('source', '')
+        score = item.get('score', 0)
+        
+        # 캡션 생성
+        caption = f"[{score:+}] {title}"
+        if source:
+            caption += f"\n📡 {source}"
+        caption += f"\n🔗 {url}"
+        
+        # 이미지가 있으면 photo로, 없으면 텍스트로
+        try:
+            if image_url and image_url.startswith('http'):
+                await update.message.reply_photo(
+                    photo=image_url,
+                    caption=caption
+                )
+            else:
+                # 이미지 없으면 텍스트만
+                await update.message.reply_text(
+                    f"• {caption}"
+                )
+        except Exception as e:
+            # 이미지 로드 실패 시 텍스트로 폴백
+            await update.message.reply_text(
+                f"• {caption}"
+            )
+        
+        # 메시지 간 간격 (텔레그램 rate limit 방지)
+        await asyncio.sleep(0.3)
 
 
 # ---------------- RSS 자동 스케줄링 (asyncio 기반) ----------------
@@ -183,18 +241,51 @@ async def rss_auto_loop(chat_id: int, bot):
                     # 클러스터링 (중복 제거)
                     clustered = cluster_scored_articles(scored)
                     
-                    # 기존 포맷으로 출력
-                    lines = []
-                    for cluster in clustered[:3]:  # 상위 3개만
+                    await bot.send_message(
+                        chat_id=chat_id,
+                        text=f"🛰 새로 들어온 RSS 기사 ({now_str}):"
+                    )
+                    
+                    # 이미지와 함께 전송 (상위 3개만)
+                    news_items = []
+                    for cluster in clustered[:3]:
                         main = cluster.main_article
                         a = main.article
-                        title = a.get("title", "제목 없음")
-                        link = a.get("link", "")
-                        score = main.score
-                        lines.append(f"• [{score:+}] {title}\n{link}")
-
-                    text = "🛰 새로 들어온 RSS 기사:\n\n" + "\n\n".join(lines)
-                    await bot.send_message(chat_id=chat_id, text=text)
+                        news_items.append({
+                            'title': a.get("title", "제목 없음"),
+                            'url': a.get("link", a.get("url", "")),
+                            'image_url': a.get("urlToImage", ""),
+                            'source': "",
+                            'score': main.score
+                        })
+                    
+                    for item in news_items:
+                        title = item['title']
+                        url = item['url']
+                        image_url = item.get('image_url', '')
+                        score = item.get('score', 0)
+                        
+                        caption = f"[{score:+}] {title}\n🔗 {url}"
+                        
+                        try:
+                            if image_url and image_url.startswith('http'):
+                                await bot.send_photo(
+                                    chat_id=chat_id,
+                                    photo=image_url,
+                                    caption=caption
+                                )
+                            else:
+                                await bot.send_message(
+                                    chat_id=chat_id,
+                                    text=f"• {caption}"
+                                )
+                        except Exception:
+                            await bot.send_message(
+                                chat_id=chat_id,
+                                text=f"• {caption}"
+                            )
+                        
+                        await asyncio.sleep(0.3)
             else:
                 await bot.send_message(
                     chat_id=chat_id,
@@ -249,8 +340,12 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     await update.message.reply_text(f"🔎 검색어: {query}\n뉴스를 찾는 중입니다...")
-    result = search_news(query, chat_id=chat_id)
-    await update.message.reply_text(result)
+    
+    # 이미지와 함께 뉴스 가져오기
+    news_items = get_news_with_images(query, chat_id=chat_id)
+    
+    # 각 뉴스를 개별 메시지로 전송
+    await send_news_with_images(update, news_items)
 
 
 # ---------------- main ----------------
