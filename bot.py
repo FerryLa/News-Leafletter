@@ -183,6 +183,7 @@ async def send_news_with_images(update: Update, news_items: list):
     """
     뉴스 목록을 이미지와 함께 개별 메시지로 전송
     ✅ 이슈 #21-4: 썸네일 활성화 및 포맷 통일
+    ✅ 이슈 #25: 불필요한 메시지 제거
     """
     if not news_items:
         return
@@ -193,9 +194,8 @@ async def send_news_with_images(update: Update, news_items: list):
         image_url = item.get('image_url', '')
         score = item.get('score', 0)
         
-        # ✅ 이슈 #21-4: 간결하고 통일된 포맷
-        # 스코어 + 제목 + 링크
-        caption = f"[{score:+}] {title}\n🔗 {url}"
+        # ✅ 간결한 포맷 (이모티콘 제거)
+        caption = f"[{score:+}] {title}\n{url}"
         
         # 이미지가 있으면 photo로, 없으면 텍스트로 (썸네일 활성화)
         try:
@@ -253,11 +253,8 @@ async def rss_auto_loop(chat_id: int, bot):
                 if scored:
                     clustered = cluster_scored_articles(scored)
                     
-                    now_str = datetime.now().strftime("%H:%M:%S")
-                    await bot.send_message(
-                        chat_id=chat_id,
-                        text=f"🛰 새 기사 ({now_str})"
-                    )
+                    # ✅ 이슈 #25: 헤더 메시지 제거
+                    # 바로 기사 전송 시작
                     
                     # 상위 3개만 전송
                     news_items = []
@@ -272,14 +269,19 @@ async def rss_auto_loop(chat_id: int, bot):
                             'score': main.score
                         })
                     
+                    # ✅ 이슈 #25: 전송할 기사가 없으면 조용히 넘어감
+                    if not news_items:
+                        await asyncio.sleep(interval)
+                        continue
+                    
                     for item in news_items:
                         title = item['title']
                         url = item['url']
                         image_url = item.get('image_url', '')
                         score = item.get('score', 0)
                         
-                        # ✅ 이슈 #21-4: 통일된 포맷
-                        caption = f"[{score:+}] {title}\n🔗 {url}"
+                        # ✅ 간결한 포맷 (이모티콘 제거)
+                        caption = f"[{score:+}] {title}\n{url}"
                         
                         try:
                             if image_url and image_url.startswith('http'):
