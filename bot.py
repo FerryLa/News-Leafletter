@@ -182,38 +182,43 @@ async def rss_now(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def send_news_with_images(update: Update, news_items: list):
     """
     뉴스 목록을 이미지와 함께 개별 메시지로 전송
-    ✅ 이슈 #25: 에러 로깅 추가 (디버깅용)
+    ✅ 이슈 #21-4: 썸네일 활성화 및 포맷 통일
     """
     if not news_items:
-        # ✅ 이슈 #25: 빈 결과 시 메시지 전송 안 함
         return
     
     for item in news_items:
         title = item['title']
         url = item['url']
         image_url = item.get('image_url', '')
-        source = item.get('source', '')
         score = item.get('score', 0)
         
-        # 캡션 생성
-        caption = f"[{score:+}] {title}"
-        if source:
-            caption += f"\n📡 {source}"
-        caption += f"\n🔗 {url}"
+        # ✅ 이슈 #21-4: 간결하고 통일된 포맷
+        # 스코어 + 제목 + 링크
+        caption = f"[{score:+}] {title}\n🔗 {url}"
         
-        # 이미지가 있으면 photo로, 없으면 텍스트로
+        # 이미지가 있으면 photo로, 없으면 텍스트로 (썸네일 활성화)
         try:
             if image_url and image_url.startswith('http'):
+                # 이미지가 있을 때
                 await update.message.reply_photo(
                     photo=image_url,
                     caption=caption
                 )
             else:
-                await update.message.reply_text(f"• {caption}")
+                # ✅ 이슈 #21-4: 썸네일 활성화
+                # 이미지 없어도 웹페이지 미리보기 표시
+                await update.message.reply_text(
+                    text=caption,
+                    disable_web_page_preview=False  # 썸네일 활성화!
+                )
         except Exception as e:
-            # ✅ 이슈 #25: 에러 로깅 추가
+            # 에러 발생 시 폴백 (썸네일 없이)
             print(f"메시지 전송 실패: {e}")
-            await update.message.reply_text(f"• {caption}")
+            await update.message.reply_text(
+                text=caption,
+                disable_web_page_preview=True  # 에러 시 썸네일 비활성화
+            )
         
         # 메시지 간 간격
         await asyncio.sleep(0.3)
@@ -273,6 +278,7 @@ async def rss_auto_loop(chat_id: int, bot):
                         image_url = item.get('image_url', '')
                         score = item.get('score', 0)
                         
+                        # ✅ 이슈 #21-4: 통일된 포맷
                         caption = f"[{score:+}] {title}\n🔗 {url}"
                         
                         try:
@@ -283,15 +289,18 @@ async def rss_auto_loop(chat_id: int, bot):
                                     caption=caption
                                 )
                             else:
+                                # ✅ 이슈 #21-4: 썸네일 활성화
                                 await bot.send_message(
                                     chat_id=chat_id,
-                                    text=f"• {caption}"
+                                    text=caption,
+                                    disable_web_page_preview=False  # 썸네일 활성화!
                                 )
                         except Exception as e:
                             print(f"RSS 전송 실패: {e}")
                             await bot.send_message(
                                 chat_id=chat_id,
-                                text=f"• {caption}"
+                                text=caption,
+                                disable_web_page_preview=True  # 에러 시 비활성화
                             )
                         
                         await asyncio.sleep(0.3)
