@@ -1,6 +1,5 @@
-# app/bot.py
+# bot.py - 이슈 #25 해결 + asyncio 에러 수정
 # 알람주기, 안내, 각종 커맨드, RSS스케줄링, 일반 텍스트 검색 등
-# main 실행 함수
 
 from telegram import Update
 from telegram.ext import (
@@ -15,7 +14,10 @@ from datetime import datetime
 from config import TELEGRAM_TOKEN
 from app.news import search_news, get_news_with_images
 from app.storage import get_keywords, add_keyword, remove_keyword
-from app.rss.rss_fetcher import fetch_new_articles
+
+# ⚠️ 수정: fetch_new_articles 대신 fetch_new_articles_async 사용
+from app.rss.rss_fetcher import fetch_new_articles_async
+
 from app.super_controller import super_controller
 
 # ------------------ 뉴스 스코어링 및 클러스터링 관련 ----------------
@@ -97,6 +99,7 @@ async def del_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def scan_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
     등록된 모든 관심 키워드에 대해 뉴스를 검색
+    ✅ 이슈 #25: 불필요한 중간 메시지 제거
     """
     chat_id = update.effective_chat.id
     keywords = get_keywords(chat_id)
@@ -107,53 +110,58 @@ async def scan_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    await update.message.reply_text(
-        "📡 관심 키워드에 대한 뉴스를 스캔합니다:\n"
-        + "\n".join(f"- {kw}" for kw in keywords)
-    )
+    # ✅ 간결한 시작 메시지
+    await update.message.reply_text("🔎 뉴스 검색 중...")
 
     # 각 키워드별로 검색
     for kw in keywords:
-        # 검색용 쿼리: 맨 앞의 '-'는 떼고 사용
         query_kw = kw.lstrip("-").strip()
         if not query_kw:
             continue
 
-        await update.message.reply_text(f"🔎 [{kw}] 관련 뉴스")
-        
-        # 이미지와 함께 뉴스 가져오기
         news_items = get_news_with_images(query_kw, chat_id=chat_id)
         
-        # 각 뉴스를 개별 메시지로 전송
-        await send_news_with_images(update, news_items)
+        # ✅ 이슈 #25: 결과가 있을 때만 메시지 전송
+        if news_items:
+            await update.message.reply_text(f"📰 [{kw}]")
+            await send_news_with_images(update, news_items)
 
 
 # ---------------- RSS 수동 조회 ----------------
 
 async def rss_now(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """RSS에서 새 기사를 확인하고 표시"""
+    """
+    RSS에서 새 기사를 확인하고 표시
+    ✅ 이슈 #25: 불필요한 메시지 제거
+    ✅ asyncio 에러 수정: fetch_new_articles_async 직접 호출
+    """
     chat_id = update.effective_chat.id
 
-    await update.message.reply_text("RSS에서 새 기사를 확인 중입니다...")
+    # ✅ 간결한 메시지
+    await update.message.reply_text("📡 RSS 확인 중...")
 
-    articles = fetch_new_articles()
+    # ⚠️ 수정: 동기 래퍼 대신 비동기 함수 직접 호출
+    result = await fetch_new_articles_async()
+    # 반환값이 튜플인지 확인
+    if isinstance(result, tuple):
+        articles = result[0]
+    else:
+        articles = result
 
     if not articles:
-        await update.message.reply_text("새로운 RSS 기사가 없습니다.")
+        await update.message.reply_text("새로운 기사가 없습니다.")
         return
 
     # 스코어링
     scored = score_and_filter_articles_for_chat(articles, chat_id)
     if not scored:
-        await update.message.reply_text("필터/스코어 기준에 맞는 RSS 기사가 없습니다.")
+        await update.message.reply_text("관심 기사가 없습니다.")
         return
 
-    # 클러스터링 (중복 제거)
+    # 클러스터링
     clustered = cluster_scored_articles(scored)
     
-    await update.message.reply_text("📰 새로 들어온 RSS 기사:")
-    
-    # 이미지와 함께 전송
+    # ✅ 이슈 #25: 헤더 메시지 제거, 바로 기사 전송
     news_items = []
     for cluster in clustered:
         main = cluster.main_article
@@ -174,47 +182,45 @@ async def rss_now(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def send_news_with_images(update: Update, news_items: list):
     """
     뉴스 목록을 이미지와 함께 개별 메시지로 전송
-    
-    Args:
-        update: Telegram Update 객체
-        news_items: [{'title', 'url', 'image_url', 'source', 'score'}, ...]
+    ✅ 이슈 #21-4: 썸네일 활성화 및 포맷 통일
+    ✅ 이슈 #25: 불필요한 메시지 제거
     """
     if not news_items:
-        await update.message.reply_text("표시할 뉴스가 없습니다.")
         return
     
     for item in news_items:
         title = item['title']
         url = item['url']
         image_url = item.get('image_url', '')
-        source = item.get('source', '')
         score = item.get('score', 0)
         
-        # 캡션 생성
-        caption = f"[{score:+}] {title}"
-        if source:
-            caption += f"\n📡 {source}"
-        caption += f"\n🔗 {url}"
+        # ✅ 간결한 포맷 (이모티콘 제거)
+        caption = f"[{score:+}] {title}\n{url}"
         
-        # 이미지가 있으면 photo로, 없으면 텍스트로
+        # 이미지가 있으면 photo로, 없으면 텍스트로 (썸네일 활성화)
         try:
             if image_url and image_url.startswith('http'):
+                # 이미지가 있을 때
                 await update.message.reply_photo(
                     photo=image_url,
                     caption=caption
                 )
             else:
-                # 이미지 없으면 텍스트만
+                # ✅ 이슈 #21-4: 썸네일 활성화
+                # 이미지 없어도 웹페이지 미리보기 표시
                 await update.message.reply_text(
-                    f"• {caption}"
+                    text=caption,
+                    disable_web_page_preview=False  # 썸네일 활성화!
                 )
         except Exception as e:
-            # 이미지 로드 실패 시 텍스트로 폴백
+            # 에러 발생 시 폴백 (썸네일 없이)
+            print(f"메시지 전송 실패: {e}")
             await update.message.reply_text(
-                f"• {caption}"
+                text=caption,
+                disable_web_page_preview=True  # 에러 시 썸네일 비활성화
             )
         
-        # 메시지 간 간격 (텔레그램 rate limit 방지)
+        # 메시지 간 간격
         await asyncio.sleep(0.3)
 
 
@@ -223,30 +229,34 @@ async def send_news_with_images(update: Update, news_items: list):
 async def rss_auto_loop(chat_id: int, bot):
     """
     특정 chat_id에 대해 주기적으로 RSS를 확인하고 결과를 보내는 루프.
+    ✅ 이슈 #25: "새 기사 없음" 메시지 제거
+    ✅ asyncio 에러 수정: fetch_new_articles_async 직접 호출
     """
     try:
-        # 처음 바로 메시지 안 나가게, 한 번 기다렸다가 시작
         interval = super_controller.get_rss_auto_interval()
         await asyncio.sleep(interval)
 
         while True:
-            articles = fetch_new_articles()
-            now_str = datetime.now().strftime("%H:%M:%S")
-
+            # ⚠️ 수정: 동기 래퍼 대신 비동기 함수 직접 호출
+            result = await fetch_new_articles_async()
+            # 반환값이 튜플인지 확인
+            if isinstance(result, tuple):
+                articles = result[0]
+            else:
+                articles = result
+            
             interval = super_controller.get_rss_auto_interval()
 
+            # ✅ 이슈 #25: 기사가 있을 때만 메시지 전송
             if articles:
                 scored = score_and_filter_articles_for_chat(articles, chat_id)
                 if scored:
-                    # 클러스터링 (중복 제거)
                     clustered = cluster_scored_articles(scored)
                     
-                    await bot.send_message(
-                        chat_id=chat_id,
-                        text=f"🛰 새로 들어온 RSS 기사 ({now_str}):"
-                    )
+                    # ✅ 이슈 #25: 헤더 메시지 제거
+                    # 바로 기사 전송 시작
                     
-                    # 이미지와 함께 전송 (상위 3개만)
+                    # 상위 3개만 전송
                     news_items = []
                     for cluster in clustered[:3]:
                         main = cluster.main_article
@@ -259,13 +269,19 @@ async def rss_auto_loop(chat_id: int, bot):
                             'score': main.score
                         })
                     
+                    # ✅ 이슈 #25: 전송할 기사가 없으면 조용히 넘어감
+                    if not news_items:
+                        await asyncio.sleep(interval)
+                        continue
+                    
                     for item in news_items:
                         title = item['title']
                         url = item['url']
                         image_url = item.get('image_url', '')
                         score = item.get('score', 0)
                         
-                        caption = f"[{score:+}] {title}\n🔗 {url}"
+                        # ✅ 간결한 포맷 (이모티콘 제거)
+                        caption = f"[{score:+}] {title}\n{url}"
                         
                         try:
                             if image_url and image_url.startswith('http'):
@@ -275,22 +291,24 @@ async def rss_auto_loop(chat_id: int, bot):
                                     caption=caption
                                 )
                             else:
+                                # ✅ 이슈 #21-4: 썸네일 활성화
                                 await bot.send_message(
                                     chat_id=chat_id,
-                                    text=f"• {caption}"
+                                    text=caption,
+                                    disable_web_page_preview=False  # 썸네일 활성화!
                                 )
-                        except Exception:
+                        except Exception as e:
+                            print(f"RSS 전송 실패: {e}")
                             await bot.send_message(
                                 chat_id=chat_id,
-                                text=f"• {caption}"
+                                text=caption,
+                                disable_web_page_preview=True  # 에러 시 비활성화
                             )
                         
                         await asyncio.sleep(0.3)
-            else:
-                await bot.send_message(
-                    chat_id=chat_id,
-                    text=f"🔁 {now_str} 기준 새 RSS 기사 없음 (주기 {interval}초 체크 중)",
-                )
+            
+            # ✅ 이슈 #25: "새 기사 없음" 메시지 완전 제거
+            # 조용히 다음 주기 대기
 
             await asyncio.sleep(interval)
     except asyncio.CancelledError:
@@ -311,7 +329,8 @@ async def rss_auto_on(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     interval = super_controller.get_rss_auto_interval()
     await update.message.reply_text(
-        f"⏱ RSS 자동 알림을 {interval}초 간격으로 시작합니다."
+        f"⏱ RSS 자동 알림 시작 ({interval}초 간격)\n"
+        "💡 새 기사가 있을 때만 알림이 옵니다."
     )
 
 
@@ -332,19 +351,28 @@ async def rss_auto_off(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
     일반 텍스트 입력 시 뉴스 검색
+    ✅ 이슈 #25: 불필요한 "검색 중" 메시지 제거
     """
     chat_id = update.effective_chat.id
     query = (update.message.text or "").strip()
     if not query:
-        await update.message.reply_text("검색어를 입력해주세요.")
         return
 
-    await update.message.reply_text(f"🔎 검색어: {query}\n뉴스를 찾는 중입니다...")
+    # ✅ 간결한 상태 메시지
+    status_msg = await update.message.reply_text("🔎 검색 중...")
     
-    # 이미지와 함께 뉴스 가져오기
     news_items = get_news_with_images(query, chat_id=chat_id)
     
-    # 각 뉴스를 개별 메시지로 전송
+    # ✅ 이슈 #25: 상태 메시지 삭제
+    try:
+        await status_msg.delete()
+    except:
+        pass
+    
+    if not news_items:
+        await update.message.reply_text("관련 기사를 찾지 못했습니다.")
+        return
+    
     await send_news_with_images(update, news_items)
 
 
@@ -354,7 +382,7 @@ def main():
     app = (
         ApplicationBuilder()
         .token(TELEGRAM_TOKEN)
-        .job_queue(None)   # <-- JobQueue 완전히 끔
+        .job_queue(None)
         .build()
     )
 
@@ -372,7 +400,7 @@ def main():
     app.add_handler(CommandHandler("rss_auto_on", rss_auto_on))
     app.add_handler(CommandHandler("rss_auto_off", rss_auto_off))
 
-    # 일반 텍스트 → 뉴스 검색 (항상 마지막)
+    # 일반 텍스트 → 뉴스 검색
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
 
     app.run_polling()
