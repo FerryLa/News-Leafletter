@@ -1,29 +1,22 @@
-# rss_fetcher.py - 이슈 #21 완전 해결: 비동기 병렬 처리 + 메모리 보호 + 향상된 캐시
+# rss_fetcher.py - SQLite 기반으로 리팩토링
+"""
+RSS 피드 수집 및 캐시 관리 (SQLite 기반)
+이슈 #21 완전 해결 + 이슈 #32 SQLite 전환
+"""
 from __future__ import annotations
-import json
-from pathlib import Path
-from datetime import datetime, timezone, timedelta
 import asyncio
 from typing import List, Dict, Optional, Set
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
+from datetime import datetime, timezone
 
 import feedparser
 
 from app.rss.rss_sources import RSS_SOURCES
-
-# 프로젝트 루트 기준으로 data/rss_state.json 경로 계산
-BASE_DIR = Path(__file__).resolve().parents[2]
-STATE_FILE = BASE_DIR / "data" / "rss_state.json"
-
-MAX_STORED_IDS = 10000  # 최근 10,000개 기사 ID만 기록
-CACHE_EXPIRY_DAYS = 7    # 7일 이상 된 기사는 캐시에서 제거
+from app.database.db_manager import get_db
 
 # 성능 최적화: 스레드 풀 재사용
 _executor = ThreadPoolExecutor(max_workers=10)
-
-# 메모리 캐시: 빠른 중복 체크용
-_memory_cache: Optional[Set[str]] = None
 
 
 @dataclass
@@ -36,62 +29,6 @@ class FetchStatistics:
     new_articles: int = 0
     duplicate_articles: int = 0
     fetch_time: float = 0.0
-
-
-def _load_state() -> dict:
-    """상태 파일 로드"""
-    if not STATE_FILE.exists():
-        return {"seen_ids": [], "timestamps": {}}
-    try:
-        with open(STATE_FILE, "r", encoding="utf-8") as f:
-            return json.load(f)
-    except Exception:
-        return {"seen_ids": [], "timestamps": {}}
-
-
-def _save_state(state: dict) -> None:
-    """
-    state 딕셔너리를 디스크에 저장
-    - seen_ids: 이미 본 기사 ID 목록
-    - timestamps: 각 ID의 첫 발견 시간
-    """
-    seen_ids: set[str] = set(state.get("seen_ids", []))
-    timestamps: dict = state.get("timestamps", {})
-    
-    # 만료된 항목 제거 (7일 이상 된 기사)
-    cutoff_time = datetime.now(timezone.utc) - timedelta(days=CACHE_EXPIRY_DAYS)
-    cutoff_iso = cutoff_time.isoformat()
-    
-    # 타임스탬프가 있는 항목 중 만료된 것 제거
-    expired_ids = [
-        article_id for article_id, timestamp in timestamps.items()
-        if timestamp < cutoff_iso
-    ]
-    
-    for article_id in expired_ids:
-        seen_ids.discard(article_id)
-        timestamps.pop(article_id, None)
-    
-    # 크기 제한 (MAX_STORED_IDS)
-    ids_list = list(seen_ids)
-    if len(ids_list) > MAX_STORED_IDS:
-        # 오래된 것부터 제거 (타임스탬프 없는 것 우선)
-        ids_with_time = [(aid, timestamps.get(aid, "0")) for aid in ids_list]
-        ids_with_time.sort(key=lambda x: x[1])
-        
-        # 최근 MAX_STORED_IDS개만 유지
-        keep_ids = [aid for aid, _ in ids_with_time[-MAX_STORED_IDS:]]
-        ids_list = keep_ids
-        
-        # 제거된 ID의 타임스탬프도 삭제
-        timestamps = {aid: timestamps[aid] for aid in keep_ids if aid in timestamps}
-    
-    state["seen_ids"] = ids_list
-    state["timestamps"] = timestamps
-    
-    STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
-    with STATE_FILE.open("w", encoding="utf-8") as f:
-        json.dump(state, f, ensure_ascii=False, indent=2)
 
 
 def _normalize_article_id(entry: dict) -> str:
@@ -129,36 +66,7 @@ def _normalize_article_id(entry: dict) -> str:
     return f"{title}|{link}".strip().lower()
 
 
-def _is_duplicate(article_id: str, seen_ids: Set[str]) -> bool:
-    """
-    중복 체크 (메모리 캐시 + 디스크 캐시)
-    
-    Args:
-        article_id: 정규화된 기사 ID
-        seen_ids: 이미 본 ID 집합
-    
-    Returns:
-        True if 중복, False if 새 기사
-    """
-    global _memory_cache
-    
-    # 메모리 캐시 초기화 (첫 호출 시)
-    if _memory_cache is None:
-        _memory_cache = set(seen_ids)
-    
-    # 메모리 캐시에서 먼저 확인 (O(1) 속도)
-    if article_id in _memory_cache:
-        return True
-    
-    # 디스크 캐시에서도 확인 (메모리 캐시 누락 대비)
-    if article_id in seen_ids:
-        _memory_cache.add(article_id)  # 메모리 캐시 동기화
-        return True
-    
-    return False
-
-
-def _fetch_single_feed(url: str, seen_ids: set[str]) -> tuple[List[dict], int, int]:
+def _fetch_single_feed(url: str) -> tuple[List[dict], int, int]:
     """
     단일 RSS 피드를 가져오는 함수 (동기)
     스레드 풀에서 실행됨
@@ -166,6 +74,7 @@ def _fetch_single_feed(url: str, seen_ids: set[str]) -> tuple[List[dict], int, i
     Returns:
         (새 기사 목록, 전체 항목 수, 중복 항목 수)
     """
+    db = get_db()
     new_articles: List[dict] = []
     total_entries = 0
     duplicate_count = 0
@@ -178,8 +87,8 @@ def _fetch_single_feed(url: str, seen_ids: set[str]) -> tuple[List[dict], int, i
             # 정규화된 ID 생성
             article_id = _normalize_article_id(entry)
             
-            # 중복 체크
-            if _is_duplicate(article_id, seen_ids):
+            # 중복 체크 (SQLite)
+            if db.is_article_seen(article_id):
                 duplicate_count += 1
                 continue
             
@@ -199,6 +108,9 @@ def _fetch_single_feed(url: str, seen_ids: set[str]) -> tuple[List[dict], int, i
                 "fetched_at": datetime.now(timezone.utc).isoformat(),
             })
             
+            # DB에 기록
+            db.mark_article_seen(article_id, source_url=url, title=title)
+            
     except Exception as e:
         # 개별 피드 실패는 전체를 막지 않음
         print(f"Failed to fetch {url}: {e}")
@@ -213,9 +125,9 @@ async def fetch_new_articles_async(
     """
     모든 RSS 소스를 **비동기 병렬**로 처리하여 성능 향상
     
-    이슈 #21 완전 해결:
+    이슈 #21 완전 해결 + 이슈 #32 SQLite 전환:
     - 1. 병렬 처리 (asyncio.gather) ✅
-    - 2. 캐시 및 중복 제거 (메모리 + 디스크) ✅
+    - 2. 캐시 및 중복 제거 (SQLite 기반) ✅
     
     Args:
         max_articles: 메모리 보호를 위한 최대 기사 수 (기본값: 1000)
@@ -226,18 +138,13 @@ async def fetch_new_articles_async(
     """
     start_time = asyncio.get_event_loop().time()
     
-    # 상태 로드
-    state = _load_state()
-    seen_ids: set[str] = set(state.get("seen_ids", []))
-    timestamps: dict = state.get("timestamps", {})
-    
     # 통계 초기화
     stats = FetchStatistics(total_feeds=len(RSS_SOURCES))
     
     # 병렬 처리를 위한 태스크 생성
     loop = asyncio.get_event_loop()
     tasks = [
-        loop.run_in_executor(_executor, _fetch_single_feed, url, seen_ids)
+        loop.run_in_executor(_executor, _fetch_single_feed, url)
         for url in RSS_SOURCES
     ]
     
@@ -247,7 +154,6 @@ async def fetch_new_articles_async(
     # 결과 병합 (메모리 보호 포함)
     all_new_articles: list[dict] = []
     article_count = 0
-    current_time = datetime.now(timezone.utc).isoformat()
     
     for result in results:
         if isinstance(result, Exception):
@@ -266,11 +172,6 @@ async def fetch_new_articles_async(
                 print(f"⚠️ 기사 수 제한 도달: {max_articles}개 (추가 기사 무시됨)")
                 break
             
-            # seen_ids 및 타임스탬프 업데이트
-            for article in new_articles:
-                seen_ids.add(article["id"])
-                timestamps[article["id"]] = current_time
-            
             # 남은 공간만큼만 추가
             remaining_space = max_articles - article_count
             articles_to_add = new_articles[:remaining_space]
@@ -278,11 +179,6 @@ async def fetch_new_articles_async(
             article_count += len(articles_to_add)
     
     stats.new_articles = len(all_new_articles)
-    
-    # 상태 저장 (seen_ids + timestamps)
-    state["seen_ids"] = list(seen_ids)
-    state["timestamps"] = timestamps
-    _save_state(state)
     
     # 통계 완성
     stats.fetch_time = asyncio.get_event_loop().time() - start_time
@@ -342,34 +238,46 @@ def print_fetch_statistics(stats: FetchStatistics) -> None:
     print("="*50 + "\n")
 
 
-# 캐시 초기화 함수 (필요시 사용)
+# ==================== 캐시 관리 유틸리티 ====================
+
 def clear_cache() -> None:
-    """메모리 캐시 및 디스크 캐시 초기화"""
-    global _memory_cache
-    _memory_cache = None
+    """RSS 캐시 초기화 (모든 seen_ids 삭제)"""
+    db = get_db()
+    conn = db._get_connection()
+    cursor = conn.cursor()
     
-    if STATE_FILE.exists():
-        STATE_FILE.unlink()
+    cursor.execute("DELETE FROM rss_cache")
+    conn.commit()
     
-    print("✅ 캐시가 초기화되었습니다.")
+    print("✅ RSS 캐시가 초기화되었습니다.")
 
 
 def get_cache_info() -> dict:
     """캐시 정보 조회"""
-    state = _load_state()
-    seen_ids = state.get("seen_ids", [])
-    timestamps = state.get("timestamps", {})
+    db = get_db()
+    stats = db.get_cache_stats()
     
-    # 오래된 항목 수 계산
-    cutoff_time = datetime.now(timezone.utc) - timedelta(days=CACHE_EXPIRY_DAYS)
-    cutoff_iso = cutoff_time.isoformat()
-    old_count = sum(1 for ts in timestamps.values() if ts < cutoff_iso)
+    # DB 크기 추가
+    stats["cache_file_size_kb"] = db.get_db_size() / 1024
+    stats["cache_expiry_days"] = 7  # 설정값
+    stats["max_stored_ids"] = 10000  # 설정값
     
-    return {
-        "total_cached_ids": len(seen_ids),
-        "with_timestamp": len(timestamps),
-        "expired_items": old_count,
-        "cache_file_size_kb": STATE_FILE.stat().st_size / 1024 if STATE_FILE.exists() else 0,
-        "cache_expiry_days": CACHE_EXPIRY_DAYS,
-        "max_stored_ids": MAX_STORED_IDS,
-    }
+    return stats
+
+
+def cleanup_old_rss_cache(days: int = 7) -> int:
+    """
+    오래된 RSS 캐시 삭제
+    
+    Args:
+        days: N일 이전 데이터 삭제
+    
+    Returns:
+        삭제된 레코드 수
+    """
+    db = get_db()
+    deleted_count = db.cleanup_old_cache(days)
+    
+    print(f"✅ {deleted_count}개의 오래된 캐시 삭제됨 ({days}일 이전)")
+    
+    return deleted_count
