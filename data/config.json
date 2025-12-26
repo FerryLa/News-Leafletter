@@ -6,7 +6,9 @@
     "admin_keywords": "관리자가 부여한 키워드 가중치로 기사 점수를 조정합니다 (대소문자 무시).",
     "news": "뉴스 API 검색 시 사용할 최대 기사 수(page_size)입니다.",
     "rss": "RSS 자동 알림을 반복 실행하는 간격(초)입니다.",
-    "bot": "텔레그램 /start 명령어에 출력할 기본 안내 메시지입니다."
+    "bot": "텔레그램 /start 명령어에 출력할 기본 안내 메시지입니다.",
+    "clustering": "뉴스 클러스터링 설정입니다. enabled를 true로 설정하면 유사한 뉴스를 그룹화합니다.",
+    "cluster_keywords": "클러스터별 대표 키워드 추출 설정입니다."
   },
   "whitelist": {
     "enabled": false,
@@ -14,10 +16,7 @@
   },
   "blacklist": {
     "enabled": true,
-    "values": [
-      "광고",
-      "sponsored"
-    ]
+    "values": ["광고", "sponsored"]
   },
   "score_rules": {
     "min_score": {
@@ -26,9 +25,7 @@
     },
     "exclude_scores": {
       "enabled": false,
-      "values": [
-        -1
-      ]
+      "values": [-1]
     }
   },
   "admin_keywords": {
@@ -39,11 +36,30 @@
     "밈코인": -3,
     "잡코인": -3
   },
+  "clustering": {
+    "enabled": false,
+    "similarity_threshold": 0.7,
+    "min_cluster_size": 2,
+    "max_clusters": 10,
+    "vectorizer": {
+      "max_features": 1000,
+      "ngram_range": [1, 2]
+    },
+    "selection": {
+      "articles_per_cluster": 2,
+      "max_total_articles": 15
+    }
+  },
+  "cluster_keywords": {
+    "enabled": true,
+    "top_n": 3,
+    "min_df": 2
+  },
   "news": {
     "page_size": 10
   },
   "rss": {
-    "auto_interval": 10
+    "auto_interval": 5
   },
   "bot": {
     "start_message": "Leafletter News Bot 입니다.\n검색할 키워드나 종목/이슈를 보내면 관련 뉴스를 찾아드립니다.\n\n기능 안내:\n- 텍스트 입력    : 해당 키워드로 뉴스 검색 (키워드 스코어링 적용)\n- /add 키워드    : 관심 키워드(+1) 또는 제외 키워드(-1) 추가\n- /list          : 관심 키워드 목록 보기\n- /del 키워드    : 관심 키워드 삭제\n- /scan          : 모든 관심 키워드 뉴스 한 번에 조회\n\n키워드 스코어링 규칙:\n- /add 비트코인 뉴스  -> '비트코인 뉴스' +1점\n- /add -밈코인        -> '밈코인' 포함 기사 -1점\n검색/알림 결과는 예시처럼 점수와 함께 표시됩니다.\n  • [+3] 비트코인 ETF 승인 임박\n  • [-1] 밈코인 단기 급등 기사\n\n추가 기능 안내 (RSS):\n- /rss_now       : RSS에서 새로 들어온 기사 수동 확인\n- /rss_auto_on   : RSS 자동 알림 시작\n- /rss_auto_off  : RSS 자동 알림 중지\n\n"

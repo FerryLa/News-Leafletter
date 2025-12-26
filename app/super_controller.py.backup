@@ -44,10 +44,6 @@ class SuperController:
         self._news_page_size: int = 10
         self._rss_auto_interval: int = 10
         self._start_message: str = DEFAULT_START_MESSAGE
-        
-        # 클러스터링 설정
-        self._clustering_config: dict[str, Any] = {}
-        self._cluster_keyword_config: dict[str, Any] = {}
 
         self.reload()
 
@@ -145,31 +141,6 @@ class SuperController:
 
         bot_conf = self._config.get("bot", {}) if isinstance(self._config, dict) else {}
         self._start_message = str(bot_conf.get("start_message", DEFAULT_START_MESSAGE))
-        
-        # 클러스터링 설정 로드
-        clustering_conf = self._config.get("clustering", {})
-        self._clustering_config = {
-            "enabled": bool(clustering_conf.get("enabled", False)),
-            "similarity_threshold": float(clustering_conf.get("similarity_threshold", 0.7)),
-            "min_cluster_size": int(clustering_conf.get("min_cluster_size", 2)),
-            "max_clusters": int(clustering_conf.get("max_clusters", 10)),
-            "vectorizer": clustering_conf.get("vectorizer", {
-                "max_features": 1000,
-                "ngram_range": [1, 2]
-            }),
-            "selection": clustering_conf.get("selection", {
-                "articles_per_cluster": 2,
-                "max_total_articles": 15
-            })
-        }
-        
-        # 클러스터 키워드 추출 설정
-        keyword_conf = self._config.get("cluster_keywords", {})
-        self._cluster_keyword_config = {
-            "enabled": bool(keyword_conf.get("enabled", True)),
-            "top_n": int(keyword_conf.get("top_n", 3)),
-            "min_df": int(keyword_conf.get("min_df", 2))
-        }
 
     def get_admin_keywords(self) -> dict[str, int]:
         return dict(self._admin_keywords)
@@ -197,14 +168,6 @@ class SuperController:
 
     def get_start_message(self) -> str:
         return self._start_message
-    
-    def get_clustering_config(self) -> dict[str, Any]:
-        """클러스터링 설정 반환"""
-        return dict(self._clustering_config)
-    
-    def get_cluster_keyword_extraction(self) -> dict[str, Any]:
-        """클러스터 키워드 추출 설정 반환"""
-        return dict(self._cluster_keyword_config)
 
 
 super_controller = SuperController()
