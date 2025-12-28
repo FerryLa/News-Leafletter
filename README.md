@@ -9,6 +9,7 @@
 - 🎯 **스마트 스코어링**: 키워드 기반 자동 뉴스 수집 및 점수화
 - 📡 **실시간 RSS 모니터링**: 50+ 언론사 자동 수집 (중복 자동 제거)
 - 🤖 **AI 클러스터링**: 유사 뉴스 자동 그룹화
+- 📊 **섹터 분류**: 5개 주요 섹터 + 41개 하위 카테고리 자동 분류 ✨ NEW
 - 💾 **SQLite 아카이브**: 전체 기사 저장 및 통계 분석
 - 👍 **유저 피드백**: 피드백 로깅 시스템 (진행 중)
 
@@ -168,6 +169,11 @@ deactivate
     "enabled": false,
     "similarity_threshold": 0.7
   },
+  "sector_classification": {
+    "enabled": true,
+    "min_confidence": 0.1,
+    "top_subcategories": 3
+  },
   "news": {
     "page_size": 10
   },
@@ -182,7 +188,10 @@ deactivate
 - `admin_keywords`: 관리자 키워드 가중치 (±3)
 - `blacklist`: 필터링 키워드
 - `clustering.enabled`: 중복 제거 활성화
+- `sector_classification.enabled`: 섹터 분류 활성화 ✨ NEW
 - `rss.auto_interval`: RSS 체크 주기 (초)
+
+자세한 섹터 분류 설정은 [섹터 분류 문서](docs/SECTOR_CLASSIFICATION.md)를 참고하세요.
 
 ---
 
@@ -245,6 +254,10 @@ News-Leafletter/
 │   ├── database/          # SQLite 매니저 (Issue #22 ✨)
 │   │   ├── db_manager.py      # 중복 제거, 배치 저장
 │   │   └── __init__.py
+│   ├── classification/    # 섹터 분류 (Issue #33 ✨)
+│   │   ├── sector_classifier.py    # 분류 로직
+│   │   ├── sector_definitions.py   # 섹터 정의
+│   │   └── __init__.py
 │   ├── clustering/        # 중복 제거
 │   │   └── news_clusterer.py
 │   ├── scoring/           # 스코어링
@@ -260,11 +273,13 @@ News-Leafletter/
 │   ├── config.json
 │   └── watchlist.json
 ├── tests/
-│   └── test_issue_22.py   # DB 테스트
+│   ├── test_issue_22.py        # DB 테스트
+│   └── test_sector_classifier.py  # 섹터 분류 테스트 ✨
 ├── docs/
 │   ├── KPI_REPORT.md
 │   ├── MIGRATION_GUIDE.md
-│   └── SQLITE_CLI_GUIDE.md
+│   ├── SQLITE_CLI_GUIDE.md
+│   └── SECTOR_CLASSIFICATION.md  # 섹터 분류 가이드 ✨
 ├── bot.py                 # 메인 엔트리
 ├── requirements.txt
 └── README.md
