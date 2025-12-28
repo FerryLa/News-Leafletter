@@ -8,7 +8,8 @@
     "rss": "RSS 자동 알림을 반복 실행하는 간격(초)입니다.",
     "bot": "텔레그램 /start 명령어에 출력할 기본 안내 메시지입니다.",
     "clustering": "뉴스 클러스터링 설정입니다. enabled를 true로 설정하면 유사한 뉴스를 그룹화합니다.",
-    "cluster_keywords": "클러스터별 대표 키워드 추출 설정입니다."
+    "cluster_keywords": "클러스터별 대표 키워드 추출 설정입니다.",
+    "sector_classification": "뉴스 기사를 5개 주요 섹터(거시경제, 사회정책, 금융, 산업/기술, 문화/생활)로 자동 분류합니다."
   },
   "whitelist": {
     "enabled": false,
@@ -54,6 +55,11 @@
     "enabled": true,
     "top_n": 3,
     "min_df": 2
+  },
+  "sector_classification": {
+    "enabled": true,
+    "min_confidence": 0.1,
+    "top_subcategories": 3
   },
   "news": {
     "page_size": 10

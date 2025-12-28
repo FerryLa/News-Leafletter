@@ -4,7 +4,7 @@ Clusters scored articles by similarity to reduce noise and group related news
 """
 
 from __future__ import annotations
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 from dataclasses import dataclass
 
 import numpy as np
@@ -24,6 +24,15 @@ class ClusteredNews:
     cluster_keywords: List[str]  # 클러스터 키워드
     total_count: int  # 전체 기사 수
     avg_score: float  # 평균 스코어
+    # 섹터 분류 정보
+    primary_sector: Optional[str] = None  # 주요 섹터
+    secondary_sector: Optional[str] = None  # 부 섹터
+    subcategories: List[str] = None  # 하위 카테고리들
+
+    def __post_init__(self):
+        """초기화 후 처리"""
+        if self.subcategories is None:
+            self.subcategories = []
 
 
 class NewsClusterer:
@@ -266,20 +275,55 @@ _articles_cache = []
 def cluster_scored_articles(scored_articles: List[ScoredArticle]) -> List[ClusteredNews]:
     """
     스코어링된 기사를 클러스터링하는 편의 함수
-    
+    섹터 분류도 함께 수행
+
     Args:
         scored_articles: ScoredArticle 리스트
-    
+
     Returns:
-        ClusteredNews 리스트
+        ClusteredNews 리스트 (섹터 정보 포함)
     """
     global _clusterer_instance, _articles_cache
-    
+
     if _clusterer_instance is None:
         _clusterer_instance = NewsClusterer()
-    
+
     # 기사 캐시 (클러스터링 중 접근용)
     _articles_cache = scored_articles
     _clusterer_instance._articles = scored_articles
-    
-    return _clusterer_instance.cluster(scored_articles)
+
+    # 클러스터링 수행
+    clustered = _clusterer_instance.cluster(scored_articles)
+
+    # 섹터 분류 활성화 여부 확인
+    sector_config = super_controller.get_sector_classification_config()
+    if not sector_config.get("enabled", True):
+        return clustered
+
+    # 각 클러스터에 섹터 분류 추가
+    try:
+        from app.classification.sector_classifier import classify_article
+
+        for cluster in clustered:
+            # 대표 기사로 섹터 분류
+            classified = classify_article(
+                cluster.main_article.article,
+                min_confidence=sector_config.get("min_confidence", 0.1)
+            )
+
+            # 섹터 정보 추가
+            if classified.primary_sector:
+                cluster.primary_sector = classified.primary_sector.sector_name
+            if classified.secondary_sector:
+                cluster.secondary_sector = classified.secondary_sector.sector_name
+
+            # 상위 N개 하위 카테고리만 추가
+            top_n = sector_config.get("top_subcategories", 3)
+            cluster.subcategories = [
+                sc.subcategory_name for sc in classified.subcategories[:top_n]
+            ]
+    except Exception as e:
+        print(f"섹터 분류 중 오류 발생: {e}")
+        # 오류가 발생해도 클러스터링 결과는 반환
+
+    return clustered
