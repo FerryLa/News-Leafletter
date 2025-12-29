@@ -322,6 +322,18 @@ def cluster_scored_articles(scored_articles: List[ScoredArticle]) -> List[Cluste
             cluster.subcategories = [
                 sc.subcategory_name for sc in classified.subcategories[:top_n]
             ]
+
+            # Issue #34: 대표 기사의 원본 딕셔너리에 섹터 정보 추가 (DB 저장용)
+            cluster.main_article.article["primary_sector"] = cluster.primary_sector or "other"
+            cluster.main_article.article["secondary_sector"] = cluster.secondary_sector
+            cluster.main_article.article["subcategories"] = cluster.subcategories
+
+            # 관련 기사들에도 동일한 섹터 정보 추가
+            for related in cluster.related_articles:
+                related.article["primary_sector"] = cluster.primary_sector or "other"
+                related.article["secondary_sector"] = cluster.secondary_sector
+                related.article["subcategories"] = cluster.subcategories
+
     except Exception as e:
         print(f"섹터 분류 중 오류 발생: {e}")
         # 오류가 발생해도 클러스터링 결과는 반환
