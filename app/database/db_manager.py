@@ -179,6 +179,9 @@ class DatabaseManager:
 
         # ✅ Issue #22: link 컬럼 마이그레이션 (여기 추가!)
         self._migrate_for_issue_22()
+
+        # ✅ Issue #34: 섹터 분류 컬럼 마이그레이션
+        self._migrate_for_issue_34()
     
     def _update_schema_version(self) -> None:
         """스키마 버전 업데이트"""
@@ -254,6 +257,62 @@ class DatabaseManager:
         
         except Exception as e:
             print(f"❌ [Issue #22] 마이그레이션 실패: {e}")
+            conn.rollback()
+
+    def _migrate_for_issue_34(self) -> None:
+        """
+        Issue #34: 섹터 분류를 위한 스키마 마이그레이션
+
+        - articles 테이블에 sector 관련 컬럼 추가
+        - sector 컬럼에 인덱스 생성
+        - 기존 데이터는 'other'로 설정
+        """
+        conn = self._get_connection()
+        cursor = conn.cursor()
+
+        try:
+            # 1. 컬럼 존재 여부 확인
+            cursor.execute("PRAGMA table_info(articles)")
+            columns = {row[1] for row in cursor.fetchall()}
+
+            if 'primary_sector' not in columns:
+                print("🔧 [Issue #34] articles 테이블 섹터 마이그레이션 시작...")
+
+                # 2. 섹터 컬럼들 추가
+                conn.execute("ALTER TABLE articles ADD COLUMN primary_sector TEXT DEFAULT 'other'")
+                print("   ✓ primary_sector 컬럼 추가 완료")
+
+                conn.execute("ALTER TABLE articles ADD COLUMN secondary_sector TEXT")
+                print("   ✓ secondary_sector 컬럼 추가 완료")
+
+                conn.execute("ALTER TABLE articles ADD COLUMN subcategories TEXT")
+                print("   ✓ subcategories 컬럼 추가 완료")
+
+                # 3. 인덱스 생성
+                conn.execute("""
+                    CREATE INDEX IF NOT EXISTS idx_articles_primary_sector
+                    ON articles(primary_sector)
+                """)
+                print("   ✓ primary_sector 인덱스 생성 완료")
+
+                conn.commit()
+                print("✅ [Issue #34] 섹터 마이그레이션 완료!")
+            else:
+                # 컬럼이 이미 존재하면 인덱스만 확인
+                cursor.execute("""
+                    SELECT name FROM sqlite_master
+                    WHERE type='index' AND name='idx_articles_primary_sector'
+                """)
+                if not cursor.fetchone():
+                    conn.execute("""
+                        CREATE INDEX IF NOT EXISTS idx_articles_primary_sector
+                        ON articles(primary_sector)
+                    """)
+                    conn.commit()
+                    print("✅ [Issue #34] 섹터 인덱스 생성 완료")
+
+        except Exception as e:
+            print(f"❌ [Issue #34] 마이그레이션 실패: {e}")
             conn.rollback()
 
 
@@ -920,14 +979,23 @@ class DatabaseManager:
                 source_url = article.get("source_url", "")
                 published_at = article.get("published_raw") or article.get("published_at")
                 fetched_at = article.get("fetched_at")
-                
+
+                # Issue #34: 섹터 정보 추출
+                primary_sector = article.get("primary_sector", "other")
+                secondary_sector = article.get("secondary_sector")
+                subcategories = article.get("subcategories")
+
+                # subcategories를 JSON 문자열로 변환
+                if subcategories and isinstance(subcategories, list):
+                    subcategories = json.dumps(subcategories, ensure_ascii=False)
+
                 # INSERT
                 cursor.execute(
                     """
-                    INSERT INTO articles 
-                    (article_id, link, title, url, summary, source_url, 
-                     published_at, fetched_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    INSERT INTO articles
+                    (article_id, link, title, url, summary, source_url,
+                     published_at, fetched_at, primary_sector, secondary_sector, subcategories)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         article_id,
@@ -937,7 +1005,10 @@ class DatabaseManager:
                         summary,
                         source_url,
                         published_at,
-                        fetched_at or datetime.now(timezone.utc).isoformat()
+                        fetched_at or datetime.now(timezone.utc).isoformat(),
+                        primary_sector,
+                        secondary_sector,
+                        subcategories
                     )
                 )
                 
