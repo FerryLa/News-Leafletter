@@ -49,6 +49,9 @@ class SuperController:
         self._clustering_config: dict[str, Any] = {}
         self._cluster_keyword_config: dict[str, Any] = {}
 
+        # 섹터 분류 설정
+        self._sector_classification_config: dict[str, Any] = {}
+
         self.reload()
 
     def _read_json(self, path: Path, default: Any) -> Any:
@@ -171,6 +174,14 @@ class SuperController:
             "min_df": int(keyword_conf.get("min_df", 2))
         }
 
+        # 섹터 분류 설정
+        sector_conf = self._config.get("sector_classification", {})
+        self._sector_classification_config = {
+            "enabled": bool(sector_conf.get("enabled", True)),
+            "min_confidence": float(sector_conf.get("min_confidence", 0.1)),
+            "top_subcategories": int(sector_conf.get("top_subcategories", 3))
+        }
+
     def get_admin_keywords(self) -> dict[str, int]:
         return dict(self._admin_keywords)
 
@@ -205,6 +216,10 @@ class SuperController:
     def get_cluster_keyword_extraction(self) -> dict[str, Any]:
         """클러스터 키워드 추출 설정 반환"""
         return dict(self._cluster_keyword_config)
+
+    def get_sector_classification_config(self) -> dict[str, Any]:
+        """섹터 분류 설정 반환"""
+        return dict(self._sector_classification_config)
 
 
 super_controller = SuperController()
