@@ -182,6 +182,9 @@ class DatabaseManager:
 
         # ✅ Issue #34: 섹터 분류 컬럼 마이그레이션
         self._migrate_for_issue_34()
+
+        # ✅ Issue #16: 언론사 필터링을 위한 user_preferences 테이블 마이그레이션
+        self._migrate_for_issue_16()
     
     def _update_schema_version(self) -> None:
         """스키마 버전 업데이트"""
@@ -313,6 +316,52 @@ class DatabaseManager:
 
         except Exception as e:
             print(f"❌ [Issue #34] 마이그레이션 실패: {e}")
+            conn.rollback()
+
+    def _migrate_for_issue_16(self) -> None:
+        """
+        Issue #16: 언론사 필터링을 위한 스키마 마이그레이션
+
+        - user_preferences 테이블 추가
+        - blocked_sources, allowed_sources를 JSON 배열로 저장
+        """
+        conn = self._get_connection()
+        cursor = conn.cursor()
+
+        try:
+            # 1. 테이블 존재 여부 확인
+            cursor.execute("""
+                SELECT name FROM sqlite_master
+                WHERE type='table' AND name='user_preferences'
+            """)
+
+            if not cursor.fetchone():
+                print("🔧 [Issue #16] user_preferences 테이블 생성 시작...")
+
+                # 2. user_preferences 테이블 생성
+                conn.execute("""
+                    CREATE TABLE user_preferences (
+                        chat_id INTEGER PRIMARY KEY,
+                        blocked_sources TEXT DEFAULT '[]',
+                        allowed_sources TEXT DEFAULT '[]',
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    )
+                """)
+                print("   ✓ user_preferences 테이블 생성 완료")
+
+                # 3. 인덱스 생성
+                conn.execute("""
+                    CREATE INDEX IF NOT EXISTS idx_user_preferences_chat
+                    ON user_preferences(chat_id)
+                """)
+                print("   ✓ user_preferences 인덱스 생성 완료")
+
+                conn.commit()
+                print("✅ [Issue #16] 마이그레이션 완료!")
+
+        except Exception as e:
+            print(f"❌ [Issue #16] 마이그레이션 실패: {e}")
             conn.rollback()
 
 
@@ -1123,6 +1172,192 @@ class DatabaseManager:
             "articles_today": today,
             "top_sources": top_sources
         }
+
+    # ==================== 언론사 필터링 (Issue #16) ====================
+
+    def get_blocked_sources(self, chat_id: int) -> List[str]:
+        """특정 사용자의 차단된 언론사 목록 가져오기"""
+        conn = self._get_connection()
+        cursor = conn.cursor()
+
+        cursor.execute(
+            "SELECT blocked_sources FROM user_preferences WHERE chat_id = ?",
+            (chat_id,)
+        )
+        row = cursor.fetchone()
+
+        if row and row[0]:
+            return json.loads(row[0])
+        return []
+
+    def get_allowed_sources(self, chat_id: int) -> List[str]:
+        """특정 사용자의 허용된 언론사 목록 가져오기"""
+        conn = self._get_connection()
+        cursor = conn.cursor()
+
+        cursor.execute(
+            "SELECT allowed_sources FROM user_preferences WHERE chat_id = ?",
+            (chat_id,)
+        )
+        row = cursor.fetchone()
+
+        if row and row[0]:
+            return json.loads(row[0])
+        return []
+
+    def block_source(self, chat_id: int, source: str) -> bool:
+        """
+        언론사 차단 추가
+
+        Returns:
+            True if 새로 추가됨, False if 이미 존재함
+        """
+        conn = self._get_connection()
+        cursor = conn.cursor()
+
+        # 현재 차단 목록 가져오기
+        blocked = self.get_blocked_sources(chat_id)
+
+        # 이미 차단된 언론사인지 확인
+        if source in blocked:
+            return False
+
+        # 차단 목록에 추가
+        blocked.append(source)
+
+        # 레코드가 존재하는지 확인
+        cursor.execute(
+            "SELECT chat_id FROM user_preferences WHERE chat_id = ?",
+            (chat_id,)
+        )
+        exists = cursor.fetchone()
+
+        if exists:
+            # 업데이트
+            cursor.execute(
+                """UPDATE user_preferences
+                   SET blocked_sources = ?, updated_at = CURRENT_TIMESTAMP
+                   WHERE chat_id = ?""",
+                (json.dumps(blocked), chat_id)
+            )
+        else:
+            # 새로 생성
+            cursor.execute(
+                """INSERT INTO user_preferences (chat_id, blocked_sources)
+                   VALUES (?, ?)""",
+                (chat_id, json.dumps(blocked))
+            )
+
+        conn.commit()
+        return True
+
+    def unblock_source(self, chat_id: int, source: str) -> bool:
+        """
+        언론사 차단 해제
+
+        Returns:
+            True if 삭제됨, False if 존재하지 않음
+        """
+        conn = self._get_connection()
+        cursor = conn.cursor()
+
+        # 현재 차단 목록 가져오기
+        blocked = self.get_blocked_sources(chat_id)
+
+        # 차단 목록에 없으면 False 반환
+        if source not in blocked:
+            return False
+
+        # 차단 목록에서 제거
+        blocked.remove(source)
+
+        # 업데이트
+        cursor.execute(
+            """UPDATE user_preferences
+               SET blocked_sources = ?, updated_at = CURRENT_TIMESTAMP
+               WHERE chat_id = ?""",
+            (json.dumps(blocked), chat_id)
+        )
+
+        conn.commit()
+        return True
+
+    def allow_source(self, chat_id: int, source: str) -> bool:
+        """
+        언론사 허용 목록에 추가
+
+        Returns:
+            True if 새로 추가됨, False if 이미 존재함
+        """
+        conn = self._get_connection()
+        cursor = conn.cursor()
+
+        # 현재 허용 목록 가져오기
+        allowed = self.get_allowed_sources(chat_id)
+
+        # 이미 허용된 언론사인지 확인
+        if source in allowed:
+            return False
+
+        # 허용 목록에 추가
+        allowed.append(source)
+
+        # 레코드가 존재하는지 확인
+        cursor.execute(
+            "SELECT chat_id FROM user_preferences WHERE chat_id = ?",
+            (chat_id,)
+        )
+        exists = cursor.fetchone()
+
+        if exists:
+            # 업데이트
+            cursor.execute(
+                """UPDATE user_preferences
+                   SET allowed_sources = ?, updated_at = CURRENT_TIMESTAMP
+                   WHERE chat_id = ?""",
+                (json.dumps(allowed), chat_id)
+            )
+        else:
+            # 새로 생성
+            cursor.execute(
+                """INSERT INTO user_preferences (chat_id, allowed_sources)
+                   VALUES (?, ?)""",
+                (chat_id, json.dumps(allowed))
+            )
+
+        conn.commit()
+        return True
+
+    def disallow_source(self, chat_id: int, source: str) -> bool:
+        """
+        언론사 허용 목록에서 제거
+
+        Returns:
+            True if 삭제됨, False if 존재하지 않음
+        """
+        conn = self._get_connection()
+        cursor = conn.cursor()
+
+        # 현재 허용 목록 가져오기
+        allowed = self.get_allowed_sources(chat_id)
+
+        # 허용 목록에 없으면 False 반환
+        if source not in allowed:
+            return False
+
+        # 허용 목록에서 제거
+        allowed.remove(source)
+
+        # 업데이트
+        cursor.execute(
+            """UPDATE user_preferences
+               SET allowed_sources = ?, updated_at = CURRENT_TIMESTAMP
+               WHERE chat_id = ?""",
+            (json.dumps(allowed), chat_id)
+        )
+
+        conn.commit()
+        return True
 
     def close(self) -> None:
         """연결 종료"""

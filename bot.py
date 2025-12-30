@@ -20,6 +20,10 @@ from app.rss.rss_fetcher import fetch_new_articles_async
 
 from app.super_controller import super_controller
 
+# Issue #16: 언론사 필터링
+from app.database.db_manager import get_db
+from app.utils.news_source_mapper import extract_source_from_url, get_all_sources
+
 # ------------------ 뉴스 스코어링 및 클러스터링 관련 ----------------
 from app.scoring.keyword_scoring import score_and_filter_articles_for_chat
 from app.clustering.news_clusterer import cluster_scored_articles
@@ -31,6 +35,16 @@ rss_tasks: dict[int, asyncio.Task] = {}
 # ---------------- 기본 안내 ----------------
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """간단한 환영 메시지"""
+    await update.message.reply_text(
+        "안녕하세요! Leafletter News Bot입니다.\n"
+        "뉴스 검색과 맞춤형 알림을 제공합니다.\n\n"
+        "사용법을 보려면 /help 명령어를 입력하세요."
+    )
+
+
+async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """전체 기능 안내"""
     text = super_controller.get_start_message()
     await update.message.reply_text(text)
 
@@ -179,12 +193,49 @@ async def rss_now(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # ---------------- 뉴스 이미지 전송 헬퍼 ----------------
 
+def filter_by_source(news_items: list, chat_id: int) -> list:
+    """
+    Issue #16: 사용자의 차단된 언론사에 따라 기사 필터링
+
+    Args:
+        news_items: 기사 목록
+        chat_id: 사용자 ID
+
+    Returns:
+        필터링된 기사 목록
+    """
+    db = get_db()
+    blocked_sources = db.get_blocked_sources(chat_id)
+
+    if not blocked_sources:
+        return news_items
+
+    filtered = []
+    for item in news_items:
+        url = item.get('url') or item.get('link', '')
+        source = extract_source_from_url(url)
+
+        # 차단된 언론사가 아니면 포함
+        if source not in blocked_sources:
+            filtered.append(item)
+
+    return filtered
+
+
 async def send_news_with_images(update: Update, news_items: list):
     """
     뉴스 목록을 이미지와 함께 개별 메시지로 전송
     ✅ 이슈 #21-4: 썸네일 활성화 및 포맷 통일
     ✅ 이슈 #25: 불필요한 메시지 제거
+    ✅ 이슈 #16: 언론사 필터링 적용
     """
+    if not news_items:
+        return
+
+    # Issue #16: 언론사 필터링
+    chat_id = update.effective_chat.id
+    news_items = filter_by_source(news_items, chat_id)
+
     if not news_items:
         return
     
@@ -269,11 +320,14 @@ async def rss_auto_loop(chat_id: int, bot):
                             'score': main.score
                         })
                     
+                    # Issue #16: 언론사 필터링 적용
+                    news_items = filter_by_source(news_items, chat_id)
+
                     # ✅ 이슈 #25: 전송할 기사가 없으면 조용히 넘어감
                     if not news_items:
                         await asyncio.sleep(interval)
                         continue
-                    
+
                     for item in news_items:
                         title = item['title']
                         url = item['url']
@@ -376,6 +430,99 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await send_news_with_images(update, news_items)
 
 
+# ---------------- 언론사 필터링 (Issue #16) ----------------
+
+async def block_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """언론사 차단"""
+    chat_id = update.effective_chat.id
+    args = context.args
+
+    if not args:
+        await update.message.reply_text(
+            "사용법: /block <언론사명>\n"
+            "예: /block 조선일보\n"
+            "또는: /block chosun.com\n\n"
+            "매핑된 언론사 목록을 보려면 /sources 명령어를 사용하세요."
+        )
+        return
+
+    source = " ".join(args).strip()
+    db = get_db()
+
+    # 차단 추가
+    if db.block_source(chat_id, source):
+        blocked = db.get_blocked_sources(chat_id)
+        await update.message.reply_text(
+            f"🚫 '{source}' 차단 완료\n\n"
+            f"차단된 언론사 ({len(blocked)}):\n" +
+            "\n".join(f"• {s}" for s in blocked)
+        )
+    else:
+        await update.message.reply_text(
+            f"'{source}'는 이미 차단된 언론사입니다."
+        )
+
+
+async def allow_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """언론사 차단 해제"""
+    chat_id = update.effective_chat.id
+    args = context.args
+
+    if not args:
+        await update.message.reply_text(
+            "사용법: /allow <언론사명>\n"
+            "예: /allow 조선일보"
+        )
+        return
+
+    source = " ".join(args).strip()
+    db = get_db()
+
+    # 차단 해제
+    if db.unblock_source(chat_id, source):
+        blocked = db.get_blocked_sources(chat_id)
+        if blocked:
+            await update.message.reply_text(
+                f"✅ '{source}' 차단 해제 완료\n\n"
+                f"남은 차단 언론사 ({len(blocked)}):\n" +
+                "\n".join(f"• {s}" for s in blocked)
+            )
+        else:
+            await update.message.reply_text(
+                f"✅ '{source}' 차단 해제 완료\n\n"
+                "이제 차단된 언론사가 없습니다."
+            )
+    else:
+        await update.message.reply_text(
+            f"'{source}'는 차단 목록에 없습니다."
+        )
+
+
+async def sources_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """차단된 언론사 목록 표시"""
+    chat_id = update.effective_chat.id
+    db = get_db()
+
+    blocked = db.get_blocked_sources(chat_id)
+
+    if not blocked:
+        msg = "🔓 차단된 언론사가 없습니다.\n\n"
+    else:
+        msg = f"🚫 차단된 언론사 ({len(blocked)}):\n"
+        msg += "\n".join(f"• {s}" for s in blocked)
+        msg += "\n\n"
+
+    # 매핑된 주요 언론사 목록 추가
+    all_sources = get_all_sources()
+    msg += f"📰 매핑된 주요 언론사 ({len(all_sources)}):\n"
+    msg += "\n".join(f"• {s}" for s in all_sources[:20])  # 처음 20개만 표시
+
+    if len(all_sources) > 20:
+        msg += f"\n... 외 {len(all_sources) - 20}개"
+
+    await update.message.reply_text(msg)
+
+
 # ---------------- main ----------------
 
 def main():
@@ -388,6 +535,7 @@ def main():
 
     # 기본 안내
     app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("help", help_cmd))
 
     # 관심 키워드 관련
     app.add_handler(CommandHandler("add", add_cmd))
@@ -399,6 +547,11 @@ def main():
     app.add_handler(CommandHandler("rss_now", rss_now))
     app.add_handler(CommandHandler("rss_auto_on", rss_auto_on))
     app.add_handler(CommandHandler("rss_auto_off", rss_auto_off))
+
+    # 언론사 필터링 (Issue #16)
+    app.add_handler(CommandHandler("block", block_cmd))
+    app.add_handler(CommandHandler("allow", allow_cmd))
+    app.add_handler(CommandHandler("sources", sources_cmd))
 
     # 일반 텍스트 → 뉴스 검색
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
