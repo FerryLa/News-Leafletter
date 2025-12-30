@@ -24,6 +24,8 @@ config.py
 # other
 data/watchlist.json
 data/rss_state.json
+*.db-shm
+*.db-wal
 
 # RSS feeds
 app/rss/rss_sources.py
