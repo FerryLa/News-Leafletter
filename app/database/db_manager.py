@@ -151,12 +151,26 @@ class DatabaseManager:
                 FOREIGN KEY (article_id) REFERENCES articles(article_id),
                 UNIQUE(chat_id, article_id, feedback_type)
             );
-            CREATE INDEX IF NOT EXISTS idx_user_feedback_chat 
+            CREATE INDEX IF NOT EXISTS idx_user_feedback_chat
                 ON user_feedback(chat_id);
-            CREATE INDEX IF NOT EXISTS idx_user_feedback_article 
+            CREATE INDEX IF NOT EXISTS idx_user_feedback_article
                 ON user_feedback(article_id);
-            CREATE INDEX IF NOT EXISTS idx_user_feedback_type 
+            CREATE INDEX IF NOT EXISTS idx_user_feedback_type
                 ON user_feedback(feedback_type);
+
+            -- 유저별 스코어링 설정
+            CREATE TABLE IF NOT EXISTS user_scoring_settings (
+                chat_id INTEGER PRIMARY KEY,
+                exclude_min_score INTEGER DEFAULT NULL,
+                whitelist_keywords TEXT DEFAULT '[]',
+                blacklist_keywords TEXT DEFAULT '[]',
+                theme_keywords TEXT DEFAULT '{}',
+                sector_scores TEXT DEFAULT '{}',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+            CREATE INDEX IF NOT EXISTS idx_user_scoring_chat
+                ON user_scoring_settings(chat_id);
             
             -- 설정 (키-값 저장소)
             CREATE TABLE IF NOT EXISTS settings (
@@ -205,46 +219,41 @@ class DatabaseManager:
     def _migrate_for_issue_22(self) -> None:
         """
         Issue #22: RSS 중복 필터링을 위한 스키마 마이그레이션
-        
+
         - articles 테이블에 link 컬럼 추가
         - link 컬럼에 UNIQUE 인덱스 생성
         - 기존 url 데이터를 link로 복사
         """
         conn = self._get_connection()
         cursor = conn.cursor()
-        
+
         try:
             # 1. link 컬럼 존재 여부 확인
             cursor.execute("PRAGMA table_info(articles)")
             columns = {row[1] for row in cursor.fetchall()}
-            
+
             if 'link' not in columns:
-                print("🔧 [Issue #22] articles 테이블 마이그레이션 시작...")
-                
-                # 2. link 컬럼 추가
+                # 2. link 컬럼 추가 (조용히)
                 conn.execute("ALTER TABLE articles ADD COLUMN link TEXT")
-                print("   ✓ link 컬럼 추가 완료")
-                
+
                 # 3. 기존 url 값을 link로 복사
                 conn.execute("UPDATE articles SET link = url WHERE link IS NULL")
-                print("   ✓ 기존 url 데이터를 link로 복사 완료")
-                
+
                 # 4. link 컬럼에 UNIQUE 인덱스 생성
                 try:
                     conn.execute("""
                         CREATE UNIQUE INDEX IF NOT EXISTS idx_articles_link_unique
                         ON articles(link)
                     """)
-                    print("   ✓ link 컬럼 UNIQUE 인덱스 생성 완료")
-                except sqlite3.IntegrityError as e:
-                    print(f"   ⚠ UNIQUE 인덱스 생성 실패 (중복 데이터 존재): {e}")
-                
+                except sqlite3.IntegrityError:
+                    # 중복 데이터가 있어도 조용히 무시
+                    pass
+
                 conn.commit()
-                print("✅ [Issue #22] 마이그레이션 완료!")
             else:
-                # link 컬럼이 이미 존재하면 인덱스만 확인
+                # link 컬럼이 이미 존재하면 인덱스만 확인 (조용히)
                 cursor.execute("""
-                    SELECT name FROM sqlite_master 
+                    SELECT name FROM sqlite_master
                     WHERE type='index' AND name='idx_articles_link_unique'
                 """)
                 if not cursor.fetchone():
@@ -254,10 +263,14 @@ class DatabaseManager:
                             ON articles(link)
                         """)
                         conn.commit()
-                        print("✅ [Issue #22] link 인덱스 생성 완료")
                     except sqlite3.IntegrityError:
                         pass
-        
+
+        except sqlite3.OperationalError as e:
+            # 컬럼이 이미 존재하는 경우 조용히 무시
+            if "duplicate column name" not in str(e):
+                print(f"❌ [Issue #22] 마이그레이션 실패: {e}")
+            conn.rollback()
         except Exception as e:
             print(f"❌ [Issue #22] 마이그레이션 실패: {e}")
             conn.rollback()
@@ -279,29 +292,20 @@ class DatabaseManager:
             columns = {row[1] for row in cursor.fetchall()}
 
             if 'primary_sector' not in columns:
-                print("🔧 [Issue #34] articles 테이블 섹터 마이그레이션 시작...")
-
-                # 2. 섹터 컬럼들 추가
+                # 2. 섹터 컬럼들 추가 (조용히)
                 conn.execute("ALTER TABLE articles ADD COLUMN primary_sector TEXT DEFAULT 'other'")
-                print("   ✓ primary_sector 컬럼 추가 완료")
-
                 conn.execute("ALTER TABLE articles ADD COLUMN secondary_sector TEXT")
-                print("   ✓ secondary_sector 컬럼 추가 완료")
-
                 conn.execute("ALTER TABLE articles ADD COLUMN subcategories TEXT")
-                print("   ✓ subcategories 컬럼 추가 완료")
 
                 # 3. 인덱스 생성
                 conn.execute("""
                     CREATE INDEX IF NOT EXISTS idx_articles_primary_sector
                     ON articles(primary_sector)
                 """)
-                print("   ✓ primary_sector 인덱스 생성 완료")
 
                 conn.commit()
-                print("✅ [Issue #34] 섹터 마이그레이션 완료!")
             else:
-                # 컬럼이 이미 존재하면 인덱스만 확인
+                # 컬럼이 이미 존재하면 인덱스만 확인 (조용히)
                 cursor.execute("""
                     SELECT name FROM sqlite_master
                     WHERE type='index' AND name='idx_articles_primary_sector'
@@ -312,8 +316,12 @@ class DatabaseManager:
                         ON articles(primary_sector)
                     """)
                     conn.commit()
-                    print("✅ [Issue #34] 섹터 인덱스 생성 완료")
 
+        except sqlite3.OperationalError as e:
+            # 컬럼이 이미 존재하는 경우 (duplicate column name) 조용히 무시
+            if "duplicate column name" not in str(e):
+                print(f"❌ [Issue #34] 마이그레이션 실패: {e}")
+            conn.rollback()
         except Exception as e:
             print(f"❌ [Issue #34] 마이그레이션 실패: {e}")
             conn.rollback()
@@ -336,9 +344,7 @@ class DatabaseManager:
             """)
 
             if not cursor.fetchone():
-                print("🔧 [Issue #16] user_preferences 테이블 생성 시작...")
-
-                # 2. user_preferences 테이블 생성
+                # 2. user_preferences 테이블 생성 (조용히)
                 conn.execute("""
                     CREATE TABLE user_preferences (
                         chat_id INTEGER PRIMARY KEY,
@@ -348,20 +354,19 @@ class DatabaseManager:
                         updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                     )
                 """)
-                print("   ✓ user_preferences 테이블 생성 완료")
 
                 # 3. 인덱스 생성
                 conn.execute("""
                     CREATE INDEX IF NOT EXISTS idx_user_preferences_chat
                     ON user_preferences(chat_id)
                 """)
-                print("   ✓ user_preferences 인덱스 생성 완료")
 
                 conn.commit()
-                print("✅ [Issue #16] 마이그레이션 완료!")
 
         except Exception as e:
-            print(f"❌ [Issue #16] 마이그레이션 실패: {e}")
+            # 테이블이 이미 존재하는 경우 조용히 무시
+            if "already exists" not in str(e):
+                print(f"❌ [Issue #16] 마이그레이션 실패: {e}")
             conn.rollback()
 
 
@@ -1358,6 +1363,182 @@ class DatabaseManager:
 
         conn.commit()
         return True
+
+    # ==================== 유저별 스코어링 설정 ====================
+
+    def get_user_scoring_settings(self, chat_id: int) -> Dict[str, Any]:
+        """유저별 스코어링 설정 가져오기"""
+        conn = self._get_connection()
+        cursor = conn.cursor()
+
+        cursor.execute(
+            """SELECT exclude_min_score, whitelist_keywords, blacklist_keywords,
+                      theme_keywords, sector_scores
+               FROM user_scoring_settings WHERE chat_id = ?""",
+            (chat_id,)
+        )
+        row = cursor.fetchone()
+
+        if not row:
+            return {
+                "exclude_min_score": None,
+                "whitelist_keywords": [],
+                "blacklist_keywords": [],
+                "theme_keywords": {},
+                "sector_scores": {}
+            }
+
+        return {
+            "exclude_min_score": row[0],
+            "whitelist_keywords": json.loads(row[1]) if row[1] else [],
+            "blacklist_keywords": json.loads(row[2]) if row[2] else [],
+            "theme_keywords": json.loads(row[3]) if row[3] else {},
+            "sector_scores": json.loads(row[4]) if row[4] else {}
+        }
+
+    def set_exclude_min_score(self, chat_id: int, min_score: int | None) -> None:
+        """최소 스코어 제한 설정"""
+        conn = self._get_connection()
+        cursor = conn.cursor()
+
+        cursor.execute(
+            """INSERT INTO user_scoring_settings (chat_id, exclude_min_score)
+               VALUES (?, ?)
+               ON CONFLICT(chat_id) DO UPDATE SET
+               exclude_min_score = ?, updated_at = CURRENT_TIMESTAMP""",
+            (chat_id, min_score, min_score)
+        )
+        conn.commit()
+
+    def add_whitelist_keyword(self, chat_id: int, keyword: str) -> bool:
+        """화이트리스트 키워드 추가"""
+        settings = self.get_user_scoring_settings(chat_id)
+        whitelist = settings["whitelist_keywords"]
+
+        if keyword in whitelist:
+            return False
+
+        whitelist.append(keyword)
+
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            """INSERT INTO user_scoring_settings (chat_id, whitelist_keywords)
+               VALUES (?, ?)
+               ON CONFLICT(chat_id) DO UPDATE SET
+               whitelist_keywords = ?, updated_at = CURRENT_TIMESTAMP""",
+            (chat_id, json.dumps(whitelist), json.dumps(whitelist))
+        )
+        conn.commit()
+        return True
+
+    def remove_whitelist_keyword(self, chat_id: int, keyword: str) -> bool:
+        """화이트리스트 키워드 제거"""
+        settings = self.get_user_scoring_settings(chat_id)
+        whitelist = settings["whitelist_keywords"]
+
+        if keyword not in whitelist:
+            return False
+
+        whitelist.remove(keyword)
+
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            """UPDATE user_scoring_settings
+               SET whitelist_keywords = ?, updated_at = CURRENT_TIMESTAMP
+               WHERE chat_id = ?""",
+            (json.dumps(whitelist), chat_id)
+        )
+        conn.commit()
+        return True
+
+    def add_blacklist_keyword(self, chat_id: int, keyword: str) -> bool:
+        """블랙리스트 키워드 추가"""
+        settings = self.get_user_scoring_settings(chat_id)
+        blacklist = settings["blacklist_keywords"]
+
+        if keyword in blacklist:
+            return False
+
+        blacklist.append(keyword)
+
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            """INSERT INTO user_scoring_settings (chat_id, blacklist_keywords)
+               VALUES (?, ?)
+               ON CONFLICT(chat_id) DO UPDATE SET
+               blacklist_keywords = ?, updated_at = CURRENT_TIMESTAMP""",
+            (chat_id, json.dumps(blacklist), json.dumps(blacklist))
+        )
+        conn.commit()
+        return True
+
+    def remove_blacklist_keyword(self, chat_id: int, keyword: str) -> bool:
+        """블랙리스트 키워드 제거"""
+        settings = self.get_user_scoring_settings(chat_id)
+        blacklist = settings["blacklist_keywords"]
+
+        if keyword not in blacklist:
+            return False
+
+        blacklist.remove(keyword)
+
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            """UPDATE user_scoring_settings
+               SET blacklist_keywords = ?, updated_at = CURRENT_TIMESTAMP
+               WHERE chat_id = ?""",
+            (json.dumps(blacklist), chat_id)
+        )
+        conn.commit()
+        return True
+
+    def add_theme_keyword(self, chat_id: int, keyword: str, days: int, score: int = 5) -> None:
+        """테마 키워드 추가 (기간 제한)"""
+        from datetime import datetime, timedelta, timezone
+
+        settings = self.get_user_scoring_settings(chat_id)
+        theme_keywords = settings["theme_keywords"]
+
+        # 만료일 계산
+        expire_date = (datetime.now(timezone.utc) + timedelta(days=days)).isoformat()
+
+        theme_keywords[keyword] = {
+            "score": score,
+            "expire_at": expire_date
+        }
+
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            """INSERT INTO user_scoring_settings (chat_id, theme_keywords)
+               VALUES (?, ?)
+               ON CONFLICT(chat_id) DO UPDATE SET
+               theme_keywords = ?, updated_at = CURRENT_TIMESTAMP""",
+            (chat_id, json.dumps(theme_keywords), json.dumps(theme_keywords))
+        )
+        conn.commit()
+
+    def set_sector_score(self, chat_id: int, sector: str, score: int) -> None:
+        """분류별 스코어 설정"""
+        settings = self.get_user_scoring_settings(chat_id)
+        sector_scores = settings["sector_scores"]
+
+        sector_scores[sector] = score
+
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            """INSERT INTO user_scoring_settings (chat_id, sector_scores)
+               VALUES (?, ?)
+               ON CONFLICT(chat_id) DO UPDATE SET
+               sector_scores = ?, updated_at = CURRENT_TIMESTAMP""",
+            (chat_id, json.dumps(sector_scores), json.dumps(sector_scores))
+        )
+        conn.commit()
 
     def close(self) -> None:
         """연결 종료"""

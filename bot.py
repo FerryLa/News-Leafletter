@@ -45,7 +45,80 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """전체 기능 안내"""
-    text = super_controller.get_start_message()
+    text = (
+        "Leafletter News Bot 입니다.\n"
+        "검색할 키워드나 종목/이슈를 보내면 관련 뉴스를 찾아드립니다.\n\n"
+        "기능 안내:\n"
+        "- 텍스트 입력    : 해당 키워드로 뉴스 검색 (키워드 스코어링 적용)\n"
+        "- /add 키워드    : 관심 키워드(+1) 또는 제외 키워드(-1) 추가\n"
+        "- /list          : 관심 키워드 목록 보기\n"
+        "- /del 키워드    : 관심 키워드 삭제\n"
+        "- /scan          : 모든 관심 키워드 뉴스 한 번에 조회\n\n"
+        "키워드 스코어링 규칙:\n"
+        "- /add 비트코인 뉴스  -> '비트코인 뉴스' +1점\n"
+        "- /add -밈코인        -> '밈코인' 포함 기사 -1점\n\n"
+        "검색/알림 결과는 예시처럼 점수와 함께 표시됩니다.\n"
+        "  • [+3] 비트코인 ETF 승인 임박\n"
+        "  • [-1] 밈코인 단기 급등 기사\n\n"
+        "조금 더 전문적인 명령어 도움말을 아래 추가 명령어로 참조해주세요.\n"
+        "- /scoring_help  : 스코어링 고급 기능 안내\n\n"
+        "언론사 필터링:\n"
+        "- /block 언론사명  : 특정 언론사 기사 차단\n"
+        "- /allow 언론사명  : 차단 해제\n"
+        "- /sources        : 차단 목록 및 매핑된 언론사 보기\n\n"
+        "RSS 기능:\n"
+        "- /rss_now       : RSS에서 새로 들어온 기사 수동 확인\n"
+        "- /rss_auto_on   : RSS 자동 알림 시작\n"
+        "- /rss_auto_off  : RSS 자동 알림 중지\n"
+    )
+    await update.message.reply_text(text)
+
+
+async def scoring_help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """스코어링 고급 기능 안내"""
+    text = (
+        "📊 고급 스코어링 기능 안내\n\n"
+        "━━━━━━━━━━━━━━━━━━━━━━\n"
+        "🔲 블랙리스트/화이트리스트 스코어링\n"
+        "━━━━━━━━━━━━━━━━━━━━━━\n"
+        "특정 키워드를 포함하거나 제외하는 강력한 필터링\n\n"
+        "• /whitelist 키워드\n"
+        "  └ 이 키워드를 포함한 뉴스만 표시\n"
+        "  └ 예: /whitelist 비트코인\n\n"
+        "• /blacklist 키워드\n"
+        "  └ 이 키워드를 포함한 뉴스는 무조건 제외\n"
+        "  └ 예: /blacklist 광고\n\n"
+        "• /remove_whitelist 키워드\n"
+        "  └ 화이트리스트에서 제거\n\n"
+        "• /remove_blacklist 키워드\n"
+        "  └ 블랙리스트에서 제거\n\n"
+        "━━━━━━━━━━━━━━━━━━━━━━\n"
+        "⏰ 테마 스코어링 (기간 제한)\n"
+        "━━━━━━━━━━━━━━━━━━━━━━\n"
+        "특정 기간 동안만 키워드에 높은 점수 부여\n\n"
+        "• /5d_add 키워드   : 5일간 +5점\n"
+        "• /20d_add 키워드  : 20일간 +5점\n"
+        "• /45d_add 키워드  : 45일간 +5점\n"
+        "• /60d_add 키워드  : 60일간 +5점\n"
+        "• /120d_add 키워드 : 120일간 +5점\n"
+        "• /225d_add 키워드 : 225일간 +5점\n"
+        "  └ 예: /20d_add AI규제 (20일간 AI규제 관련 뉴스 +5점)\n\n"
+        "━━━━━━━━━━━━━━━━━━━━━━\n"
+        "📂 분류별 스코어링\n"
+        "━━━━━━━━━━━━━━━━━━━━━━\n"
+        "5가지 분류별로 점수를 조정할 수 있습니다\n\n"
+        "• /class_add 분류명 점수\n"
+        "  └ 분류: 거시경제, 사회정책, 금융, 산업/기술, 문화/생활\n"
+        "  └ 예: /class_add 금융 3 (금융 뉴스 +3점)\n"
+        "  └ 예: /class_add 문화/생활 -2 (문화/생활 뉴스 -2점)\n\n"
+        "━━━━━━━━━━━━━━━━━━━━━━\n"
+        "🎯 최소 스코어 제한\n"
+        "━━━━━━━━━━━━━━━━━━━━━━\n"
+        "• /exclude 최소점수\n"
+        "  └ 지정한 점수보다 낮은 뉴스는 표시 안함\n"
+        "  └ 예: /exclude 2 (2점 미만 뉴스 제외)\n"
+        "  └ 예: /exclude 0 (0점 미만 뉴스 제외)\n"
+    )
     await update.message.reply_text(text)
 
 
@@ -523,6 +596,253 @@ async def sources_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(msg)
 
 
+# ---------------- 스코어링 설정 (블랙리스트/화이트리스트) ----------------
+
+async def whitelist_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """화이트리스트 키워드 추가"""
+    chat_id = update.effective_chat.id
+    args = context.args
+
+    if not args:
+        await update.message.reply_text(
+            "사용법: /whitelist 키워드\n"
+            "예: /whitelist 비트코인\n\n"
+            "이 키워드를 포함한 뉴스만 표시됩니다."
+        )
+        return
+
+    keyword = " ".join(args).strip()
+    db = get_db()
+
+    if db.add_whitelist_keyword(chat_id, keyword):
+        settings = db.get_user_scoring_settings(chat_id)
+        whitelist = settings["whitelist_keywords"]
+        await update.message.reply_text(
+            f"✅ '{keyword}' 화이트리스트에 추가\n\n"
+            f"현재 화이트리스트 ({len(whitelist)}):\n" +
+            "\n".join(f"• {kw}" for kw in whitelist)
+        )
+    else:
+        await update.message.reply_text(f"'{keyword}'는 이미 화이트리스트에 있습니다.")
+
+
+async def remove_whitelist_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """화이트리스트 키워드 제거"""
+    chat_id = update.effective_chat.id
+    args = context.args
+
+    if not args:
+        await update.message.reply_text("사용법: /remove_whitelist 키워드")
+        return
+
+    keyword = " ".join(args).strip()
+    db = get_db()
+
+    if db.remove_whitelist_keyword(chat_id, keyword):
+        await update.message.reply_text(f"✅ '{keyword}' 화이트리스트에서 제거")
+    else:
+        await update.message.reply_text(f"'{keyword}'는 화이트리스트에 없습니다.")
+
+
+async def blacklist_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """블랙리스트 키워드 추가"""
+    chat_id = update.effective_chat.id
+    args = context.args
+
+    if not args:
+        await update.message.reply_text(
+            "사용법: /blacklist 키워드\n"
+            "예: /blacklist 광고\n\n"
+            "이 키워드를 포함한 뉴스는 무조건 제외됩니다."
+        )
+        return
+
+    keyword = " ".join(args).strip()
+    db = get_db()
+
+    if db.add_blacklist_keyword(chat_id, keyword):
+        settings = db.get_user_scoring_settings(chat_id)
+        blacklist = settings["blacklist_keywords"]
+        await update.message.reply_text(
+            f"🚫 '{keyword}' 블랙리스트에 추가\n\n"
+            f"현재 블랙리스트 ({len(blacklist)}):\n" +
+            "\n".join(f"• {kw}" for kw in blacklist)
+        )
+    else:
+        await update.message.reply_text(f"'{keyword}'는 이미 블랙리스트에 있습니다.")
+
+
+async def remove_blacklist_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """블랙리스트 키워드 제거"""
+    chat_id = update.effective_chat.id
+    args = context.args
+
+    if not args:
+        await update.message.reply_text("사용법: /remove_blacklist 키워드")
+        return
+
+    keyword = " ".join(args).strip()
+    db = get_db()
+
+    if db.remove_blacklist_keyword(chat_id, keyword):
+        await update.message.reply_text(f"✅ '{keyword}' 블랙리스트에서 제거")
+    else:
+        await update.message.reply_text(f"'{keyword}'는 블랙리스트에 없습니다.")
+
+
+# ---------------- 테마 스코어링 ----------------
+
+async def theme_add_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE, days: int):
+    """테마 키워드 추가 (기간 제한)"""
+    chat_id = update.effective_chat.id
+    args = context.args
+
+    if not args:
+        await update.message.reply_text(
+            f"사용법: /{days}d_add 키워드\n"
+            f"예: /{days}d_add AI규제\n\n"
+            f"{days}일간 해당 키워드 관련 뉴스에 +5점이 부여됩니다."
+        )
+        return
+
+    keyword = " ".join(args).strip()
+    db = get_db()
+
+    db.add_theme_keyword(chat_id, keyword, days=days, score=5)
+    await update.message.reply_text(
+        f"⏰ '{keyword}' 테마 키워드 추가\n"
+        f"• 기간: {days}일\n"
+        f"• 점수: +5점\n\n"
+        f"{days}일 동안 '{keyword}' 관련 뉴스에 +5점이 부여됩니다."
+    )
+
+
+async def theme_5d_add_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await theme_add_cmd(update, context, 5)
+
+
+async def theme_20d_add_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await theme_add_cmd(update, context, 20)
+
+
+async def theme_45d_add_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await theme_add_cmd(update, context, 45)
+
+
+async def theme_60d_add_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await theme_add_cmd(update, context, 60)
+
+
+async def theme_120d_add_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await theme_add_cmd(update, context, 120)
+
+
+async def theme_225d_add_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await theme_add_cmd(update, context, 225)
+
+
+# ---------------- 분류별 스코어링 ----------------
+
+# 분류 매핑
+SECTOR_MAP = {
+    "거시경제": "거시경제",
+    "거시": "거시경제",
+    "경제": "거시경제",
+    "사회정책": "사회정책",
+    "사회": "사회정책",
+    "정책": "사회정책",
+    "금융": "금융",
+    "산업/기술": "산업/기술",
+    "산업": "산업/기술",
+    "기술": "산업/기술",
+    "문화/생활": "문화/생활",
+    "문화": "문화/생활",
+    "생활": "문화/생활",
+}
+
+
+async def class_add_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """분류별 스코어 설정"""
+    chat_id = update.effective_chat.id
+    args = context.args
+
+    if len(args) < 2:
+        await update.message.reply_text(
+            "사용법: /class_add 분류명 점수\n\n"
+            "분류:\n"
+            "• 거시경제 (또는 경제, 거시)\n"
+            "• 사회정책 (또는 사회, 정책)\n"
+            "• 금융\n"
+            "• 산업/기술 (또는 산업, 기술)\n"
+            "• 문화/생활 (또는 문화, 생활)\n\n"
+            "예:\n"
+            "• /class_add 금융 3\n"
+            "• /class_add 문화/생활 -2"
+        )
+        return
+
+    sector_input = args[0].strip()
+    try:
+        score = int(args[1])
+    except ValueError:
+        await update.message.reply_text("점수는 숫자로 입력해주세요.\n예: /class_add 금융 3")
+        return
+
+    # 분류 매핑
+    sector = SECTOR_MAP.get(sector_input)
+    if not sector:
+        await update.message.reply_text(
+            f"'{sector_input}'는 유효한 분류가 아닙니다.\n\n"
+            "유효한 분류:\n"
+            "• 거시경제, 사회정책, 금융, 산업/기술, 문화/생활"
+        )
+        return
+
+    db = get_db()
+    db.set_sector_score(chat_id, sector, score)
+
+    settings = db.get_user_scoring_settings(chat_id)
+    sector_scores = settings["sector_scores"]
+
+    await update.message.reply_text(
+        f"📂 '{sector}' 분류 점수 설정: {score:+}점\n\n"
+        "현재 분류별 점수:\n" +
+        "\n".join(f"• {s}: {sc:+}점" for s, sc in sector_scores.items())
+    )
+
+
+# ---------------- 최소 스코어 제한 ----------------
+
+async def exclude_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """최소 스코어 제한 설정"""
+    chat_id = update.effective_chat.id
+    args = context.args
+
+    if not args:
+        await update.message.reply_text(
+            "사용법: /exclude 최소점수\n\n"
+            "예:\n"
+            "• /exclude 2 (2점 미만 뉴스 제외)\n"
+            "• /exclude 0 (0점 미만 뉴스 제외)\n"
+            "• /exclude -1 (-1점 미만 뉴스 제외)"
+        )
+        return
+
+    try:
+        min_score = int(args[0])
+    except ValueError:
+        await update.message.reply_text("점수는 숫자로 입력해주세요.\n예: /exclude 2")
+        return
+
+    db = get_db()
+    db.set_exclude_min_score(chat_id, min_score)
+
+    await update.message.reply_text(
+        f"🎯 최소 스코어 제한 설정: {min_score}점\n\n"
+        f"{min_score}점 미만의 뉴스는 표시되지 않습니다."
+    )
+
+
 # ---------------- main ----------------
 
 def main():
@@ -536,6 +856,7 @@ def main():
     # 기본 안내
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("help", help_cmd))
+    app.add_handler(CommandHandler("scoring_help", scoring_help_cmd))
 
     # 관심 키워드 관련
     app.add_handler(CommandHandler("add", add_cmd))
@@ -552,6 +873,26 @@ def main():
     app.add_handler(CommandHandler("block", block_cmd))
     app.add_handler(CommandHandler("allow", allow_cmd))
     app.add_handler(CommandHandler("sources", sources_cmd))
+
+    # 스코어링 설정 (블랙리스트/화이트리스트)
+    app.add_handler(CommandHandler("whitelist", whitelist_cmd))
+    app.add_handler(CommandHandler("remove_whitelist", remove_whitelist_cmd))
+    app.add_handler(CommandHandler("blacklist", blacklist_cmd))
+    app.add_handler(CommandHandler("remove_blacklist", remove_blacklist_cmd))
+
+    # 테마 스코어링
+    app.add_handler(CommandHandler("5d_add", theme_5d_add_cmd))
+    app.add_handler(CommandHandler("20d_add", theme_20d_add_cmd))
+    app.add_handler(CommandHandler("45d_add", theme_45d_add_cmd))
+    app.add_handler(CommandHandler("60d_add", theme_60d_add_cmd))
+    app.add_handler(CommandHandler("120d_add", theme_120d_add_cmd))
+    app.add_handler(CommandHandler("225d_add", theme_225d_add_cmd))
+
+    # 분류별 스코어링
+    app.add_handler(CommandHandler("class_add", class_add_cmd))
+
+    # 최소 스코어 제한
+    app.add_handler(CommandHandler("exclude", exclude_cmd))
 
     # 일반 텍스트 → 뉴스 검색
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
