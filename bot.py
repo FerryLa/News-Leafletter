@@ -49,19 +49,20 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Leafletter News Bot 입니다.\n"
         "검색할 키워드나 종목/이슈를 보내면 관련 뉴스를 찾아드립니다.\n\n"
         "기능 안내:\n"
-        "- 텍스트 입력    : 해당 키워드로 뉴스 검색 (키워드 스코어링 적용)\n"
-        "- /add 키워드    : 관심 키워드(+1) 또는 제외 키워드(-1) 추가\n"
-        "- /list          : 관심 키워드 목록 보기 (점수 포함)\n"
-        "- /del 키워드    : 관심 키워드 삭제\n"
-        "- /scan          : 모든 관심 키워드 뉴스 한 번에 조회\n"
-        "- /scores        : 전체 스코어링 규칙 확인\n\n"
-        "키워드 스코어링 규칙:\n"
-        "- /add 비트코인 뉴스  -> '비트코인 뉴스' +1점\n"
-        "- /add -밈코인        -> '밈코인' 포함 기사 -1점\n\n"
-        "검색/알림 결과는 예시처럼 점수와 함께 표시됩니다.\n"
+        "- 텍스트 입력         : 해당 키워드로 뉴스 검색\n"
+        "- /add 키워드 [점수]  : 관심 키워드 추가\n"
+        "- /list               : 관심 키워드 목록 보기 (점수 포함)\n"
+        "- /del 키워드         : 관심 키워드 삭제\n"
+        "- /scan               : 모든 관심 키워드 뉴스 한 번에 조회\n"
+        "- /scores             : 전체 스코어링 규칙 확인\n\n"
+        "키워드 스코어링:\n"
+        "- /add 비트코인       -> 비트코인 +1점\n"
+        "- /add 기재정정 +3    -> 기재정정 +3점\n"
+        "- /add 밈코인 -2      -> 밈코인 -2점\n\n"
+        "검색/알림 결과는 점수와 함께 표시됩니다:\n"
         "  • [+3] 비트코인 ETF 승인 임박\n"
-        "  • [-1] 밈코인 단기 급등 기사\n\n"
-        "조금 더 전문적인 명령어 도움말을 아래 추가 명령어로 참조해주세요.\n"
+        "  • [-2] 밈코인 단기 급등 기사\n\n"
+        "고급 기능:\n"
         "- /scoring_help  : 스코어링 고급 기능 안내\n\n"
         "언론사 필터링:\n"
         "- /block 언론사명  : 특정 언론사 기사 차단\n"
@@ -132,45 +133,83 @@ async def scoring_help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ---------------- 관심 키워드 관리 ----------------
 
 async def add_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    키워드 추가/업데이트 명령어
+
+    사용법:
+    - /add 키워드          -> 키워드에 +1점
+    - /add 키워드 +3       -> 키워드에 +3점
+    - /add 키워드 -2       -> 키워드에 -2점
+    """
     chat_id = update.effective_chat.id
     args = context.args
 
     if not args:
-        await update.message.reply_text("사용법: /add 키워드\n예: /add 비트코인 뉴스")
+        await update.message.reply_text(
+            "사용법: /add 키워드 [점수]\n\n"
+            "예:\n"
+            "• /add 비트코인        -> 비트코인 +1점\n"
+            "• /add 기재정정 +3     -> 기재정정 +3점\n"
+            "• /add 밈코인 -2       -> 밈코인 -2점"
+        )
         return
 
-    keyword = " ".join(args).strip()
-    keywords = add_keyword(chat_id, keyword)
+    # 마지막 인자가 숫자인지 확인
+    score = 1
+    keyword_parts = args
 
+    if len(args) >= 2:
+        try:
+            # 마지막 인자를 점수로 파싱 시도
+            score = int(args[-1])
+            keyword_parts = args[:-1]
+        except ValueError:
+            # 숫자가 아니면 전체를 키워드로 처리
+            pass
+
+    keyword = " ".join(keyword_parts).strip()
+
+    if not keyword:
+        await update.message.reply_text("키워드를 입력해주세요.")
+        return
+
+    # DB에 키워드 추가/업데이트
+    from app.database.db_manager import get_db
+    db = get_db()
+    is_new = db.add_keyword(chat_id, keyword, score)
+
+    # 현재 키워드 목록 가져오기
+    keyword_scores = db.get_keywords_with_scores(chat_id)
+
+    action = "추가" if is_new else "업데이트"
     await update.message.reply_text(
-        f"✅ 관심 키워드 추가: {keyword}\n"
-        f"현재 키워드: {', '.join(keywords)}"
+        f"✅ '{keyword}' {action}: {score:+}점\n\n"
+        f"현재 키워드 ({len(keyword_scores)}):\n" +
+        "\n".join(f"  • {k}: {v:+}점" for k, v in keyword_scores.items())
     )
 
 
 async def list_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """관심 키워드 목록 보기 (점수 포함)"""
     chat_id = update.effective_chat.id
-    keywords = get_keywords(chat_id)
 
-    if not keywords:
+    from app.database.db_manager import get_db
+    db = get_db()
+    keyword_scores = db.get_keywords_with_scores(chat_id)
+
+    if not keyword_scores:
         await update.message.reply_text(
             "등록된 관심 키워드가 없습니다.\n/add 로 키워드를 추가해보세요."
         )
         return
 
-    # 키워드별 점수 계산
-    from app.scoring.keyword_scoring import _split_user_keywords
-    keyword_scores = _split_user_keywords(keywords)
-
     lines = []
-    for i, kw in enumerate(keywords):
-        # 원본 키워드에서 +/- 제거한 버전으로 점수 찾기
-        core_kw = kw.lstrip("+-").strip().lower()
-        score = keyword_scores.get(core_kw, 0)
-        lines.append(f"{i + 1}. {kw} ({score:+}점)")
+    for i, (kw, score) in enumerate(keyword_scores.items(), 1):
+        lines.append(f"{i}. {kw} ({score:+}점)")
 
-    await update.message.reply_text("📌 관심 키워드 목록:\n" + "\n".join(lines))
+    await update.message.reply_text(
+        f"📌 관심 키워드 목록 ({len(keyword_scores)}):\n" + "\n".join(lines)
+    )
 
 
 async def del_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -868,9 +907,8 @@ async def scores_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # 스코어링 설정 가져오기
     settings = db.get_user_scoring_settings(chat_id)
-    keywords = get_keywords(chat_id)
+    keyword_scores = db.get_keywords_with_scores(chat_id)
 
-    from app.scoring.keyword_scoring import _split_user_keywords
     from datetime import datetime, timezone
 
     msg_parts = []
@@ -878,13 +916,10 @@ async def scores_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg_parts.append("━━━━━━━━━━━━━━━━━━━━━━")
 
     # 1. 기본 키워드
-    if keywords:
-        msg_parts.append("\n🔑 기본 키워드:")
-        keyword_scores = _split_user_keywords(keywords)
-        for kw in keywords:
-            core_kw = kw.lstrip("+-").strip().lower()
-            score = keyword_scores.get(core_kw, 0)
-            msg_parts.append(f"  • {kw} ({score:+}점)")
+    if keyword_scores:
+        msg_parts.append(f"\n🔑 기본 키워드 ({len(keyword_scores)}):")
+        for kw, score in keyword_scores.items():
+            msg_parts.append(f"  • {kw}: {score:+}점")
     else:
         msg_parts.append("\n🔑 기본 키워드: 없음")
 

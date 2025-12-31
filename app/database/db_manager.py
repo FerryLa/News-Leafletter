@@ -82,10 +82,12 @@ class DatabaseManager:
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 chat_id INTEGER NOT NULL,
                 keyword TEXT NOT NULL,
+                score INTEGER DEFAULT 1,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 UNIQUE(chat_id, keyword)
             );
-            CREATE INDEX IF NOT EXISTS idx_user_keywords_chat 
+            CREATE INDEX IF NOT EXISTS idx_user_keywords_chat
                 ON user_keywords(chat_id);
             
             -- RSS 캐시 (중복 제거용)
@@ -199,6 +201,9 @@ class DatabaseManager:
 
         # ✅ Issue #16: 언론사 필터링을 위한 user_preferences 테이블 마이그레이션
         self._migrate_for_issue_16()
+
+        # ✅ 키워드 점수 컬럼 마이그레이션
+        self._migrate_keyword_score_column()
     
     def _update_schema_version(self) -> None:
         """스키마 버전 업데이트"""
@@ -369,40 +374,165 @@ class DatabaseManager:
                 print(f"❌ [Issue #16] 마이그레이션 실패: {e}")
             conn.rollback()
 
+    def _migrate_keyword_score_column(self) -> None:
+        """
+        키워드 점수 컬럼 마이그레이션
+
+        - user_keywords 테이블에 score, updated_at 컬럼 추가
+        - 기존 +/- 접두사가 있는 키워드 데이터 정리
+        """
+        conn = self._get_connection()
+        cursor = conn.cursor()
+
+        try:
+            # 1. 컬럼 존재 여부 확인
+            cursor.execute("PRAGMA table_info(user_keywords)")
+            columns = {row[1] for row in cursor.fetchall()}
+
+            if 'score' not in columns:
+                # 2. score, updated_at 컬럼 추가
+                conn.execute("ALTER TABLE user_keywords ADD COLUMN score INTEGER DEFAULT 1")
+                # SQLite는 DEFAULT CURRENT_TIMESTAMP를 ALTER TABLE에서 지원 안함
+                conn.execute("ALTER TABLE user_keywords ADD COLUMN updated_at TIMESTAMP")
+
+                # 3. 기존 데이터에서 +/- 접두사 처리
+                cursor.execute("SELECT id, chat_id, keyword FROM user_keywords")
+                rows = cursor.fetchall()
+
+                for row_id, chat_id, keyword in rows:
+                    kw = keyword.strip()
+                    score = 1
+                    clean_kw = kw
+
+                    # +/- 접두사 처리
+                    if kw.startswith('-'):
+                        score = -1
+                        clean_kw = kw[1:].strip()
+                    elif kw.startswith('+'):
+                        score = 1
+                        clean_kw = kw[1:].strip()
+
+                    # 정리된 키워드와 점수로 업데이트
+                    if clean_kw != kw:
+                        cursor.execute(
+                            "UPDATE user_keywords SET keyword = ?, score = ? WHERE id = ?",
+                            (clean_kw, score, row_id)
+                        )
+
+                # 4. 같은 chat_id, keyword 조합이 중복되면 점수 합산 후 하나만 남기기
+                cursor.execute("""
+                    SELECT chat_id, keyword, GROUP_CONCAT(id), SUM(score)
+                    FROM user_keywords
+                    GROUP BY chat_id, keyword
+                    HAVING COUNT(*) > 1
+                """)
+                duplicates = cursor.fetchall()
+
+                for chat_id, keyword, ids, total_score in duplicates:
+                    id_list = ids.split(',')
+                    keep_id = id_list[0]  # 첫 번째 ID만 유지
+                    delete_ids = id_list[1:]  # 나머지 삭제
+
+                    # 점수 업데이트
+                    cursor.execute(
+                        "UPDATE user_keywords SET score = ? WHERE id = ?",
+                        (total_score, keep_id)
+                    )
+
+                    # 중복 삭제
+                    for del_id in delete_ids:
+                        cursor.execute("DELETE FROM user_keywords WHERE id = ?", (del_id,))
+
+                conn.commit()
+
+        except sqlite3.OperationalError as e:
+            if "duplicate column name" not in str(e):
+                pass  # 조용히 무시
+            conn.rollback()
+        except Exception as e:
+            pass  # 조용히 무시
+            conn.rollback()
+
 
     # ==================== 유저 키워드 관련 ====================
     
     def get_keywords(self, chat_id: int) -> List[str]:
-        """특정 chat_id의 모든 키워드 가져오기"""
+        """
+        특정 chat_id의 모든 키워드 가져오기 (하위 호환성 유지)
+
+        Returns:
+            키워드 리스트 (점수 정보 없음)
+        """
         conn = self._get_connection()
         cursor = conn.cursor()
-        
+
         cursor.execute(
             "SELECT keyword FROM user_keywords WHERE chat_id = ? ORDER BY created_at",
             (chat_id,)
         )
-        
+
         return [row[0] for row in cursor.fetchall()]
-    
-    def add_keyword(self, chat_id: int, keyword: str) -> bool:
+
+    def get_keywords_with_scores(self, chat_id: int) -> Dict[str, int]:
         """
-        키워드 추가
-        
+        특정 chat_id의 모든 키워드와 점수 가져오기
+
         Returns:
-            True if 새로 추가됨, False if 이미 존재함
+            {keyword: score} 딕셔너리
         """
         conn = self._get_connection()
         cursor = conn.cursor()
-        
+
+        cursor.execute(
+            "SELECT keyword, score FROM user_keywords WHERE chat_id = ? ORDER BY created_at",
+            (chat_id,)
+        )
+
+        return {row[0]: row[1] for row in cursor.fetchall()}
+    
+    def add_keyword(self, chat_id: int, keyword: str, score: int = 1) -> bool:
+        """
+        키워드 추가 또는 업데이트
+
+        Args:
+            chat_id: 텔레그램 chat ID
+            keyword: 키워드
+            score: 점수 (기본값 1)
+
+        Returns:
+            True if 새로 추가됨, False if 기존 키워드 업데이트됨
+        """
+        conn = self._get_connection()
+        cursor = conn.cursor()
+
         try:
-            cursor.execute(
-                "INSERT INTO user_keywords (chat_id, keyword) VALUES (?, ?)",
-                (chat_id, keyword)
-            )
+            # updated_at 컬럼이 있는지 확인
+            cursor.execute("PRAGMA table_info(user_keywords)")
+            columns = {row[1] for row in cursor.fetchall()}
+            has_updated_at = 'updated_at' in columns
+
+            if has_updated_at:
+                cursor.execute(
+                    """INSERT INTO user_keywords (chat_id, keyword, score)
+                       VALUES (?, ?, ?)
+                       ON CONFLICT(chat_id, keyword) DO UPDATE SET
+                       score = ?, updated_at = CURRENT_TIMESTAMP""",
+                    (chat_id, keyword, score, score)
+                )
+            else:
+                cursor.execute(
+                    """INSERT INTO user_keywords (chat_id, keyword, score)
+                       VALUES (?, ?, ?)
+                       ON CONFLICT(chat_id, keyword) DO UPDATE SET
+                       score = ?""",
+                    (chat_id, keyword, score, score)
+                )
+
             conn.commit()
-            return True
-        except sqlite3.IntegrityError:
-            # UNIQUE 제약 위반 (이미 존재)
+            # rowcount가 1이면 새로 추가, 2면 업데이트
+            return cursor.rowcount == 1
+        except Exception as e:
+            conn.rollback()
             return False
     
     def remove_keyword(self, chat_id: int, keyword: str) -> bool:
