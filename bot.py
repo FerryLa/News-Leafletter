@@ -51,9 +51,10 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "기능 안내:\n"
         "- 텍스트 입력    : 해당 키워드로 뉴스 검색 (키워드 스코어링 적용)\n"
         "- /add 키워드    : 관심 키워드(+1) 또는 제외 키워드(-1) 추가\n"
-        "- /list          : 관심 키워드 목록 보기\n"
+        "- /list          : 관심 키워드 목록 보기 (점수 포함)\n"
         "- /del 키워드    : 관심 키워드 삭제\n"
-        "- /scan          : 모든 관심 키워드 뉴스 한 번에 조회\n\n"
+        "- /scan          : 모든 관심 키워드 뉴스 한 번에 조회\n"
+        "- /scores        : 전체 스코어링 규칙 확인\n\n"
         "키워드 스코어링 규칙:\n"
         "- /add 비트코인 뉴스  -> '비트코인 뉴스' +1점\n"
         "- /add -밈코인        -> '밈코인' 포함 기사 -1점\n\n"
@@ -117,7 +118,13 @@ async def scoring_help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "• /exclude 최소점수\n"
         "  └ 지정한 점수보다 낮은 뉴스는 표시 안함\n"
         "  └ 예: /exclude 2 (2점 미만 뉴스 제외)\n"
-        "  └ 예: /exclude 0 (0점 미만 뉴스 제외)\n"
+        "  └ 예: /exclude 0 (0점 미만 뉴스 제외)\n\n"
+        "━━━━━━━━━━━━━━━━━━━━━━\n"
+        "📋 스코어링 규칙 확인\n"
+        "━━━━━━━━━━━━━━━━━━━━━━\n"
+        "• /scores\n"
+        "  └ 현재 설정된 모든 스코어링 규칙 확인\n"
+        "  └ 키워드별 점수, 테마 만료일 등 한눈에 보기\n"
     )
     await update.message.reply_text(text)
 
@@ -142,6 +149,7 @@ async def add_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def list_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """관심 키워드 목록 보기 (점수 포함)"""
     chat_id = update.effective_chat.id
     keywords = get_keywords(chat_id)
 
@@ -151,7 +159,17 @@ async def list_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    lines = [f"{i + 1}. {kw}" for i, kw in enumerate(keywords)]
+    # 키워드별 점수 계산
+    from app.scoring.keyword_scoring import _split_user_keywords
+    keyword_scores = _split_user_keywords(keywords)
+
+    lines = []
+    for i, kw in enumerate(keywords):
+        # 원본 키워드에서 +/- 제거한 버전으로 점수 찾기
+        core_kw = kw.lstrip("+-").strip().lower()
+        score = keyword_scores.get(core_kw, 0)
+        lines.append(f"{i + 1}. {kw} ({score:+}점)")
+
     await update.message.reply_text("📌 관심 키워드 목록:\n" + "\n".join(lines))
 
 
@@ -843,6 +861,95 @@ async def exclude_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
+async def scores_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """전체 스코어링 규칙 확인"""
+    chat_id = update.effective_chat.id
+    db = get_db()
+
+    # 스코어링 설정 가져오기
+    settings = db.get_user_scoring_settings(chat_id)
+    keywords = get_keywords(chat_id)
+
+    from app.scoring.keyword_scoring import _split_user_keywords
+    from datetime import datetime, timezone
+
+    msg_parts = []
+    msg_parts.append("📊 현재 스코어링 규칙\n")
+    msg_parts.append("━━━━━━━━━━━━━━━━━━━━━━")
+
+    # 1. 기본 키워드
+    if keywords:
+        msg_parts.append("\n🔑 기본 키워드:")
+        keyword_scores = _split_user_keywords(keywords)
+        for kw in keywords:
+            core_kw = kw.lstrip("+-").strip().lower()
+            score = keyword_scores.get(core_kw, 0)
+            msg_parts.append(f"  • {kw} ({score:+}점)")
+    else:
+        msg_parts.append("\n🔑 기본 키워드: 없음")
+
+    # 2. 화이트리스트
+    whitelist = settings["whitelist_keywords"]
+    if whitelist:
+        msg_parts.append(f"\n⚪ 화이트리스트 ({len(whitelist)}):")
+        for kw in whitelist:
+            msg_parts.append(f"  • {kw}")
+
+    # 3. 블랙리스트
+    blacklist = settings["blacklist_keywords"]
+    if blacklist:
+        msg_parts.append(f"\n⚫ 블랙리스트 ({len(blacklist)}):")
+        for kw in blacklist:
+            msg_parts.append(f"  • {kw}")
+
+    # 4. 테마 키워드 (기간 제한)
+    theme_keywords = settings["theme_keywords"]
+    if theme_keywords:
+        now = datetime.now(timezone.utc)
+        active_themes = []
+        expired_themes = []
+
+        for kw, theme_data in theme_keywords.items():
+            expire_str = theme_data.get("expire_at", "")
+            score = theme_data.get("score", 5)
+
+            try:
+                expire_date = datetime.fromisoformat(expire_str)
+                days_left = (expire_date - now).days
+
+                if now < expire_date:
+                    active_themes.append(f"  • {kw} ({score:+}점, {days_left}일 남음)")
+                else:
+                    expired_themes.append(f"  • {kw} (만료됨)")
+            except (ValueError, AttributeError):
+                expired_themes.append(f"  • {kw} (만료됨)")
+
+        if active_themes:
+            msg_parts.append(f"\n⏰ 테마 키워드 ({len(active_themes)}):")
+            msg_parts.extend(active_themes)
+
+        if expired_themes:
+            msg_parts.append(f"\n⏰ 만료된 테마 ({len(expired_themes)}):")
+            msg_parts.extend(expired_themes)
+
+    # 5. 분류별 점수
+    sector_scores = settings["sector_scores"]
+    if sector_scores:
+        msg_parts.append(f"\n📂 분류별 점수:")
+        for sector, score in sector_scores.items():
+            msg_parts.append(f"  • {sector}: {score:+}점")
+
+    # 6. 최소 스코어 제한
+    exclude_min_score = settings["exclude_min_score"]
+    if exclude_min_score is not None:
+        msg_parts.append(f"\n🎯 최소 스코어 제한: {exclude_min_score}점")
+
+    msg_parts.append("\n━━━━━━━━━━━━━━━━━━━━━━")
+
+    # 메시지 전송
+    await update.message.reply_text("\n".join(msg_parts))
+
+
 # ---------------- main ----------------
 
 def main():
@@ -893,6 +1000,9 @@ def main():
 
     # 최소 스코어 제한
     app.add_handler(CommandHandler("exclude", exclude_cmd))
+
+    # 스코어링 규칙 확인
+    app.add_handler(CommandHandler("scores", scores_cmd))
 
     # 일반 텍스트 → 뉴스 검색
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
