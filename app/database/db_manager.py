@@ -202,6 +202,9 @@ class DatabaseManager:
         # ✅ Issue #16: 언론사 필터링을 위한 user_preferences 테이블 마이그레이션
         self._migrate_for_issue_16()
 
+        # ✅ Issue #36: user_feedback FOREIGN KEY 제약 조건 제거
+        self._migrate_remove_feedback_fk()
+
         # ✅ 키워드 점수 컬럼 마이그레이션
         self._migrate_keyword_score_column()
     
@@ -372,6 +375,78 @@ class DatabaseManager:
             # 테이블이 이미 존재하는 경우 조용히 무시
             if "already exists" not in str(e):
                 print(f"❌ [Issue #16] 마이그레이션 실패: {e}")
+            conn.rollback()
+
+    def _migrate_remove_feedback_fk(self) -> None:
+        """
+        Issue #36: user_feedback 테이블의 FOREIGN KEY 제약 조건 제거
+
+        - FOREIGN KEY 제약이 있으면 텔레그램에서 전송된 기사(articles 테이블에 없음)에 피드백을 남길 수 없음
+        - 테이블을 재생성하여 FOREIGN KEY 제약 제거
+        """
+        conn = self._get_connection()
+        cursor = conn.cursor()
+
+        try:
+            # FOREIGN KEY 확인
+            cursor.execute("PRAGMA foreign_key_list(user_feedback)")
+            fk_list = cursor.fetchall()
+
+            if not fk_list:
+                # 이미 FOREIGN KEY가 없으면 스킵
+                return
+
+            # 기존 데이터 백업
+            cursor.execute("SELECT * FROM user_feedback")
+            backup_data = cursor.fetchall()
+
+            # 테이블 삭제
+            cursor.execute("DROP TABLE IF EXISTS user_feedback")
+
+            # FOREIGN KEY 없이 재생성
+            cursor.execute("""
+                CREATE TABLE user_feedback (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    chat_id INTEGER NOT NULL,
+                    article_id TEXT NOT NULL,
+                    feedback_type TEXT NOT NULL,
+                    feedback_value INTEGER,
+                    comment TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE(chat_id, article_id, feedback_type)
+                )
+            """)
+
+            # 인덱스 재생성
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_user_feedback_chat
+                ON user_feedback(chat_id)
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_user_feedback_article
+                ON user_feedback(article_id)
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_user_feedback_type
+                ON user_feedback(feedback_type)
+            """)
+
+            # 데이터 복원
+            if backup_data:
+                cursor.executemany(
+                    """
+                    INSERT INTO user_feedback
+                    (id, chat_id, article_id, feedback_type, feedback_value, comment, created_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    backup_data
+                )
+
+            conn.commit()
+            # print("[Issue #36] user_feedback FOREIGN KEY 제약 조건 제거 완료")
+
+        except Exception as e:
+            # print(f"[Issue #36] 마이그레이션 실패: {e}")
             conn.rollback()
 
     def _migrate_keyword_score_column(self) -> None:

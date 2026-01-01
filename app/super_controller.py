@@ -46,7 +46,7 @@ class SuperController:
         self._score_rules: dict[str, Any] = {}
         self._admin_keywords: dict[str, int] = {}
         self._news_page_size: int = 10
-        self._rss_auto_interval: int = 10
+        self._rss_auto_interval: int = 5  # RSS 자동 알림 기본 간격 (초)
         self._start_message: str = DEFAULT_START_MESSAGE
         
         # 클러스터링 설정
@@ -148,7 +148,7 @@ class SuperController:
         self._news_page_size = int(news_conf.get("page_size", 10))
 
         rss_conf = self._config.get("rss", {}) if isinstance(self._config, dict) else {}
-        self._rss_auto_interval = int(rss_conf.get("auto_interval", 10))
+        self._rss_auto_interval = int(rss_conf.get("auto_interval", 5))  # RSS 자동 알림 기본 간격 (초)
 
         bot_conf = self._config.get("bot", {}) if isinstance(self._config, dict) else {}
         self._start_message = str(bot_conf.get("start_message", DEFAULT_START_MESSAGE))

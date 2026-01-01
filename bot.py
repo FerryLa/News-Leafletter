@@ -2,6 +2,8 @@
 # 알람주기, 안내, 각종 커맨드, RSS스케줄링, 일반 텍스트 검색 등
 
 from telegram import Update
+import telegram
+import telegram.ext
 from telegram.ext import (
     ApplicationBuilder,
     CommandHandler,
@@ -9,10 +11,17 @@ from telegram.ext import (
     ContextTypes,
     filters,
 )
+
+# MessageReactionHandler 로드 (선택적)
+try:
+    from telegram.ext import MessageReactionHandler
+except (ImportError, AttributeError):
+    MessageReactionHandler = None
+
 import asyncio
 from datetime import datetime
 from config import TELEGRAM_TOKEN
-from app.news import search_news, get_news_with_images
+from app.news import search_news, get_news_with_images, get_breaking_news
 from app.storage import get_keywords, add_keyword, remove_keyword
 
 # ⚠️ 수정: fetch_new_articles 대신 fetch_new_articles_async 사용
@@ -30,11 +39,12 @@ from app.clustering.news_clusterer import cluster_scored_articles
 
 # chat_id -> asyncio.Task 매핑
 rss_tasks: dict[int, asyncio.Task] = {}
+breaking_tasks: dict[int, asyncio.Task] = {}
 
 
 # ---------------- 기본 안내 ----------------
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def intro(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """간단한 환영 메시지"""
     await update.message.reply_text(
         "안녕하세요! Leafletter News Bot입니다.\n"
@@ -63,15 +73,26 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "  • [+3] 비트코인 ETF 승인 임박\n"
         "  • [-2] 밈코인 단기 급등 기사\n\n"
         "고급 기능:\n"
-        "- /scoring_help  : 스코어링 고급 기능 안내\n\n"
+        "- /scoring_help  : 스코어링 고급 기능 안내\n"
+        "- /breaking_help : 속보 기능 안내\n"
+        "- /themes        : 테마 키워드 목록 확인\n\n"
         "언론사 필터링:\n"
         "- /block 언론사명  : 특정 언론사 기사 차단\n"
         "- /allow 언론사명  : 차단 해제\n"
         "- /sources        : 차단 목록 및 매핑된 언론사 보기\n\n"
-        "RSS 기능:\n"
-        "- /rss_now       : RSS에서 새로 들어온 기사 수동 확인\n"
-        "- /rss_auto_on   : RSS 자동 알림 시작\n"
-        "- /rss_auto_off  : RSS 자동 알림 중지\n"
+        "뉴스 알림:\n"
+        "- /start         : 뉴스 자동 알림 시작 (RSS 기반)\n"
+        "- /stop          : 뉴스 자동 알림 중지\n"
+        "- /rss_now       : RSS에서 새로 들어온 기사 수동 확인\n\n"
+        "속보 기능:\n"
+        "- /breaking_now  : 실시간 속보 확인\n"
+        "- /breaking_auto_on  : 속보 자동 알림 시작 (5분 간격)\n"
+        "- /breaking_auto_off : 속보 자동 알림 중지\n\n"
+        "피드백:\n"
+        "- /like          : 가장 최근 기사에 좋아요\n"
+        "- /dislike [이유] : 가장 최근 기사에 싫어요\n"
+        "- /feedback      : 내 피드백 통계 보기\n"
+        "- 👍/👎 리액션   : 기사 메시지에 이모지 리액션으로 빠른 피드백\n"
     )
     await update.message.reply_text(text)
 
@@ -104,7 +125,8 @@ async def scoring_help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "• /60d_add 키워드  : 60일간 +5점\n"
         "• /120d_add 키워드 : 120일간 +5점\n"
         "• /225d_add 키워드 : 225일간 +5점\n"
-        "  └ 예: /20d_add AI규제 (20일간 AI규제 관련 뉴스 +5점)\n\n"
+        "  └ 예: /20d_add AI규제 (20일간 AI규제 관련 뉴스 +5점)\n"
+        "• /themes : 현재 활성화된 테마 키워드 확인\n\n"
         "━━━━━━━━━━━━━━━━━━━━━━\n"
         "📂 분류별 스코어링\n"
         "━━━━━━━━━━━━━━━━━━━━━━\n"
@@ -126,6 +148,36 @@ async def scoring_help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "• /scores\n"
         "  └ 현재 설정된 모든 스코어링 규칙 확인\n"
         "  └ 키워드별 점수, 테마 만료일 등 한눈에 보기\n"
+    )
+    await update.message.reply_text(text)
+
+
+async def breaking_help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """속보 기능 안내"""
+    text = (
+        "📰 속보 기능 안내\n\n"
+        "━━━━━━━━━━━━━━━━━━━━━━\n"
+        "NewsAPI의 top-headlines를 사용하여\n"
+        "한국의 실시간 속보를 가져옵니다.\n\n"
+        "━━━━━━━━━━━━━━━━━━━━━━\n"
+        "🔔 속보 명령어\n"
+        "━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        "• /breaking_now\n"
+        "  └ 현재 실시간 속보를 즉시 확인합니다\n"
+        "  └ 스코어링/필터링이 적용됩니다\n\n"
+        "• /breaking_auto_on\n"
+        "  └ 속보 자동 알림을 시작합니다 (5분 간격)\n"
+        "  └ 새로운 속보만 알림으로 전송됩니다\n"
+        "  └ 중복 방지 기능이 적용됩니다\n\n"
+        "• /breaking_auto_off\n"
+        "  └ 속보 자동 알림을 중지합니다\n\n"
+        "━━━━━━━━━━━━━━━━━━━━━━\n"
+        "💡 참고사항\n"
+        "━━━━━━━━━━━━━━━━━━━━━━\n"
+        "• 속보에도 키워드 스코어링이 적용됩니다\n"
+        "• 언론사 필터링(/block)도 적용됩니다\n"
+        "• 이모지 리액션(👍/👎)으로 피드백 가능\n"
+        "• /exclude로 설정한 최소 점수도 적용됩니다\n"
     )
     await update.message.reply_text(text)
 
@@ -358,6 +410,7 @@ async def send_news_with_images(update: Update, news_items: list):
     ✅ 이슈 #21-4: 썸네일 활성화 및 포맷 통일
     ✅ 이슈 #25: 불필요한 메시지 제거
     ✅ 이슈 #16: 언론사 필터링 적용
+    ✅ 이슈 #36: 최근 기사 저장 (피드백용)
     """
     if not news_items:
         return
@@ -368,39 +421,47 @@ async def send_news_with_images(update: Update, news_items: list):
 
     if not news_items:
         return
-    
+
+    # Issue #36: 첫 번째 기사만 최근 기사로 저장 (피드백용)
+    if news_items:
+        recent_articles[chat_id] = news_items[0]
+
     for item in news_items:
         title = item['title']
         url = item['url']
         image_url = item.get('image_url', '')
         score = item.get('score', 0)
-        
-        # ✅ 간결한 포맷 (이모티콘 제거)
+
+        # 간결한 포맷 (점수 + 제목 + 썸네일)
         caption = f"[{score:+}] {title}\n{url}"
-        
+
         # 이미지가 있으면 photo로, 없으면 텍스트로 (썸네일 활성화)
+        sent_message = None
         try:
             if image_url and image_url.startswith('http'):
                 # 이미지가 있을 때
-                await update.message.reply_photo(
+                sent_message = await update.message.reply_photo(
                     photo=image_url,
                     caption=caption
                 )
             else:
-                # ✅ 이슈 #21-4: 썸네일 활성화
-                # 이미지 없어도 웹페이지 미리보기 표시
-                await update.message.reply_text(
+                # 썸네일 활성화
+                sent_message = await update.message.reply_text(
                     text=caption,
-                    disable_web_page_preview=False  # 썸네일 활성화!
+                    disable_web_page_preview=False  # 썸네일 활성화
                 )
         except Exception as e:
             # 에러 발생 시 폴백 (썸네일 없이)
             print(f"메시지 전송 실패: {e}")
-            await update.message.reply_text(
+            sent_message = await update.message.reply_text(
                 text=caption,
                 disable_web_page_preview=True  # 에러 시 썸네일 비활성화
             )
-        
+
+        # 메시지 ID를 기사에 매핑 (이모지 리액션 피드백용)
+        if sent_message:
+            message_to_article[sent_message.message_id] = item
+
         # 메시지 간 간격
         await asyncio.sleep(0.3)
 
@@ -463,32 +524,37 @@ async def rss_auto_loop(chat_id: int, bot):
                         url = item['url']
                         image_url = item.get('image_url', '')
                         score = item.get('score', 0)
-                        
-                        # ✅ 간결한 포맷 (이모티콘 제거)
+
+                        # 간결한 포맷 (점수 + 제목 + 썸네일)
                         caption = f"[{score:+}] {title}\n{url}"
-                        
+
+                        sent_message = None
                         try:
                             if image_url and image_url.startswith('http'):
-                                await bot.send_photo(
+                                sent_message = await bot.send_photo(
                                     chat_id=chat_id,
                                     photo=image_url,
                                     caption=caption
                                 )
                             else:
-                                # ✅ 이슈 #21-4: 썸네일 활성화
-                                await bot.send_message(
+                                # 썸네일 활성화
+                                sent_message = await bot.send_message(
                                     chat_id=chat_id,
                                     text=caption,
-                                    disable_web_page_preview=False  # 썸네일 활성화!
+                                    disable_web_page_preview=False  # 썸네일 활성화
                                 )
                         except Exception as e:
                             print(f"RSS 전송 실패: {e}")
-                            await bot.send_message(
+                            sent_message = await bot.send_message(
                                 chat_id=chat_id,
                                 text=caption,
                                 disable_web_page_preview=True  # 에러 시 비활성화
                             )
-                        
+
+                        # 메시지 ID를 기사에 매핑 (이모지 리액션 피드백용)
+                        if sent_message:
+                            message_to_article[sent_message.message_id] = item
+
                         await asyncio.sleep(0.3)
             
             # ✅ 이슈 #25: "새 기사 없음" 메시지 완전 제거
@@ -499,35 +565,235 @@ async def rss_auto_loop(chat_id: int, bot):
         return
 
 
-async def rss_auto_on(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def start_news(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """뉴스 자동 알림 시작 (RSS 기반 + 속보 자동 알림)"""
     chat_id = update.effective_chat.id
 
-    old_task = rss_tasks.get(chat_id)
+    # RSS 자동 알림 시작
+    old_rss_task = rss_tasks.get(chat_id)
+    if old_rss_task is not None and not old_rss_task.done():
+        old_rss_task.cancel()
+
+    rss_task = context.application.create_task(
+        rss_auto_loop(chat_id, context.bot)
+    )
+    rss_tasks[chat_id] = rss_task
+
+    # Issue #36: 속보 자동 알림도 함께 시작
+    old_breaking_task = breaking_tasks.get(chat_id)
+    if old_breaking_task is not None and not old_breaking_task.done():
+        old_breaking_task.cancel()
+
+    breaking_task = context.application.create_task(
+        breaking_auto_loop(chat_id, context.bot)
+    )
+    breaking_tasks[chat_id] = breaking_task
+
+    interval = super_controller.get_rss_auto_interval()
+    await update.message.reply_text(
+        f"✅ 뉴스 자동 알림 시작!\n"
+        f"📰 RSS 뉴스: {interval}초 간격\n"
+        f"⚡ 속보 뉴스: 5분 간격\n\n"
+        "💡 새 기사가 있을 때만 알림이 옵니다.\n"
+        "중지하려면 /stop 을 입력하세요."
+    )
+
+
+async def stop_news(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """뉴스 자동 알림 중지 (RSS + 속보)"""
+    chat_id = update.effective_chat.id
+
+    # RSS 알림 중지
+    rss_task = rss_tasks.pop(chat_id, None)
+    rss_running = rss_task is not None and not rss_task.done()
+
+    # 속보 알림 중지
+    breaking_task = breaking_tasks.pop(chat_id, None)
+    breaking_running = breaking_task is not None and not breaking_task.done()
+
+    if not rss_running and not breaking_running:
+        await update.message.reply_text(
+            "현재 뉴스 자동 알림이 켜져 있지 않습니다.\n"
+            "시작하려면 /start 를 입력하세요."
+        )
+        return
+
+    # 실행 중인 태스크 중지
+    if rss_running:
+        rss_task.cancel()
+    if breaking_running:
+        breaking_task.cancel()
+
+    await update.message.reply_text(
+        "⏹ 뉴스 자동 알림을 중지했습니다.\n"
+        "  - RSS 뉴스 알림 중지\n"
+        "  - 속보 뉴스 알림 중지"
+    )
+
+
+# ---------------- 속보 자동 스케줄링 ----------------
+
+async def breaking_auto_loop(chat_id: int, bot):
+    """
+    속보 자동 알림 루프 (5분 간격)
+    """
+    from app.database.db_manager import get_db
+    import hashlib
+
+    db = get_db()
+    interval = 300  # 5분
+
+    try:
+        while True:
+            try:
+                # 속보 가져오기
+                breaking_items = get_breaking_news(chat_id)
+
+                # Issue #16: 언론사 필터링 적용
+                breaking_items = filter_by_source(breaking_items, chat_id)
+
+                if not breaking_items:
+                    await asyncio.sleep(interval)
+                    continue
+
+                for item in breaking_items:
+                    title = item['title']
+                    url = item['url']
+                    image_url = item.get('image_url', '')
+                    score = item.get('score', 0)
+
+                    # article_id 생성 (중복 체크용)
+                    article_id = hashlib.md5(url.encode()).hexdigest()
+
+                    # 이미 전송한 기사인지 확인
+                    if db.has_seen_article(article_id):
+                        continue
+
+                    # 기사 전송
+                    caption = f"[{score:+}] {title}\n{url}"
+
+                    sent_message = None
+                    try:
+                        if image_url and image_url.startswith('http'):
+                            sent_message = await bot.send_photo(
+                                chat_id=chat_id,
+                                photo=image_url,
+                                caption=caption
+                            )
+                        else:
+                            sent_message = await bot.send_message(
+                                chat_id=chat_id,
+                                text=caption,
+                                disable_web_page_preview=False
+                            )
+                    except Exception as e:
+                        print(f"속보 전송 실패: {e}")
+                        sent_message = await bot.send_message(
+                            chat_id=chat_id,
+                            text=caption,
+                            disable_web_page_preview=True
+                        )
+
+                    # 메시지 ID를 기사에 매핑 (이모지 리액션 피드백용)
+                    if sent_message:
+                        message_to_article[sent_message.message_id] = item
+
+                    # 캐시에 저장
+                    db.mark_article_seen(article_id, url, title)
+
+                    await asyncio.sleep(0.3)
+
+            except Exception as e:
+                print(f"속보 자동 알림 오류: {e}")
+
+            await asyncio.sleep(interval)
+    except asyncio.CancelledError:
+        return
+
+
+async def breaking_now(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """실시간 속보 수동 확인"""
+    chat_id = update.effective_chat.id
+
+    await update.message.reply_text("📰 실시간 속보를 가져오는 중...")
+
+    breaking_items = get_breaking_news(chat_id)
+
+    # Issue #16: 언론사 필터링 적용
+    breaking_items = filter_by_source(breaking_items, chat_id)
+
+    if not breaking_items:
+        await update.message.reply_text("현재 스코어링 기준에 맞는 속보가 없습니다.")
+        return
+
+    # send_news_with_images와 동일한 방식으로 전송
+    if breaking_items:
+        recent_articles[chat_id] = breaking_items[0]
+
+    for item in breaking_items:
+        title = item['title']
+        url = item['url']
+        image_url = item.get('image_url', '')
+        score = item.get('score', 0)
+
+        caption = f"[{score:+}] {title}\n{url}"
+
+        sent_message = None
+        try:
+            if image_url and image_url.startswith('http'):
+                sent_message = await update.message.reply_photo(
+                    photo=image_url,
+                    caption=caption
+                )
+            else:
+                sent_message = await update.message.reply_text(
+                    text=caption,
+                    disable_web_page_preview=False
+                )
+        except Exception as e:
+            print(f"속보 전송 실패: {e}")
+            sent_message = await update.message.reply_text(
+                text=caption,
+                disable_web_page_preview=True
+            )
+
+        # 메시지 ID를 기사에 매핑 (이모지 리액션 피드백용)
+        if sent_message:
+            message_to_article[sent_message.message_id] = item
+
+        await asyncio.sleep(0.3)
+
+
+async def breaking_auto_on(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """속보 자동 알림 시작"""
+    chat_id = update.effective_chat.id
+
+    old_task = breaking_tasks.get(chat_id)
     if old_task is not None and not old_task.done():
         old_task.cancel()
 
     task = context.application.create_task(
-        rss_auto_loop(chat_id, context.bot)
+        breaking_auto_loop(chat_id, context.bot)
     )
-    rss_tasks[chat_id] = task
+    breaking_tasks[chat_id] = task
 
-    interval = super_controller.get_rss_auto_interval()
     await update.message.reply_text(
-        f"⏱ RSS 자동 알림 시작 ({interval}초 간격)\n"
-        "💡 새 기사가 있을 때만 알림이 옵니다."
+        "⏱ 속보 자동 알림 시작 (5분 간격)\n"
+        "💡 새 속보가 있을 때만 알림이 옵니다."
     )
 
 
-async def rss_auto_off(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def breaking_auto_off(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """속보 자동 알림 중지"""
     chat_id = update.effective_chat.id
 
-    task = rss_tasks.pop(chat_id, None)
+    task = breaking_tasks.pop(chat_id, None)
     if task is None or task.done():
-        await update.message.reply_text("현재 RSS 자동 알림이 켜져 있지 않습니다.")
+        await update.message.reply_text("현재 속보 자동 알림이 켜져 있지 않습니다.")
         return
 
     task.cancel()
-    await update.message.reply_text("⏹ RSS 자동 알림을 중지했습니다.")
+    await update.message.reply_text("⏹ 속보 자동 알림을 중지했습니다.")
 
 
 # ---------------- 일반 텍스트 검색 ----------------
@@ -798,6 +1064,73 @@ async def theme_225d_add_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE)
     await theme_add_cmd(update, context, 225)
 
 
+async def themes_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """현재 활성화된 테마 키워드 목록 확인"""
+    from datetime import datetime, timezone
+
+    chat_id = update.effective_chat.id
+    db = get_db()
+
+    settings = db.get_user_scoring_settings(chat_id)
+    theme_keywords = settings["theme_keywords"]
+
+    if not theme_keywords:
+        await update.message.reply_text(
+            "⏰ 현재 활성화된 테마 키워드가 없습니다.\n\n"
+            "테마 키워드 추가 방법:\n"
+            "• /5d_add 키워드   : 5일간 +5점\n"
+            "• /20d_add 키워드  : 20일간 +5점\n"
+            "• /45d_add 키워드  : 45일간 +5점\n"
+            "• /60d_add 키워드  : 60일간 +5점\n"
+            "• /120d_add 키워드 : 120일간 +5점\n"
+            "• /225d_add 키워드 : 225일간 +5점"
+        )
+        return
+
+    # 만료되지 않은 테마만 필터링
+    now = datetime.now(timezone.utc)
+    active_themes = []
+    expired_themes = []
+
+    for keyword, info in theme_keywords.items():
+        expire_at = datetime.fromisoformat(info["expire_at"])
+        score = info["score"]
+
+        if expire_at > now:
+            # 남은 일수 계산
+            days_left = (expire_at - now).days
+            active_themes.append((keyword, score, days_left, expire_at))
+        else:
+            expired_themes.append(keyword)
+
+    # 메시지 작성
+    msg_parts = ["⏰ 활성화된 테마 키워드\n", "━━━━━━━━━━━━━━━━━━━━━━"]
+
+    if active_themes:
+        # 남은 일수로 정렬 (적게 남은 순)
+        active_themes.sort(key=lambda x: x[2])
+
+        for keyword, score, days_left, expire_at in active_themes:
+            expire_date = expire_at.strftime("%Y-%m-%d")
+            msg_parts.append(
+                f"• {keyword}\n"
+                f"  └ 점수: +{score}점\n"
+                f"  └ 남은 기간: {days_left}일 (만료: {expire_date})"
+            )
+
+    if expired_themes:
+        msg_parts.append("\n━━━━━━━━━━━━━━━━━━━━━━")
+        msg_parts.append("⏱ 만료된 테마 (자동 제거됨)")
+        msg_parts.append("━━━━━━━━━━━━━━━━━━━━━━")
+        for keyword in expired_themes:
+            msg_parts.append(f"• {keyword}")
+
+    if not active_themes and not expired_themes:
+        msg_parts.append("\n현재 활성화된 테마가 없습니다.")
+
+    await update.message.reply_text("\n".join(msg_parts))
+
+
 # ---------------- 분류별 스코어링 ----------------
 
 # 분류 매핑
@@ -985,6 +1318,204 @@ async def scores_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("\n".join(msg_parts))
 
 
+# ---------------- 유저 피드백 ----------------
+
+# 최근 전송한 기사를 임시 저장 (chat_id -> article)
+recent_articles: dict[int, dict] = {}
+
+# 메시지 ID를 기사 정보에 매핑 (message_id -> article)
+message_to_article: dict[int, dict] = {}
+
+
+async def like_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """가장 최근 기사에 좋아요"""
+    chat_id = update.effective_chat.id
+
+    # 최근 기사 확인
+    if chat_id not in recent_articles:
+        await update.message.reply_text(
+            "최근 받은 기사가 없습니다.\n"
+            "먼저 뉴스를 검색하거나 /scan, /rss_now를 실행해주세요."
+        )
+        return
+
+    article = recent_articles[chat_id]
+    article_url = article.get('url', '')
+    article_title = article.get('title', '제목 없음')
+
+    # 피드백 저장
+    from app.database.db_manager import get_db
+    import hashlib
+
+    db = get_db()
+    article_id = hashlib.md5(article_url.encode()).hexdigest()
+
+    db.add_feedback(
+        chat_id=chat_id,
+        article_id=article_id,
+        feedback_type="like",
+        feedback_value=1,
+        comment=""
+    )
+
+    await update.message.reply_text(
+        f"👍 피드백 감사합니다!\n\n"
+        f"'{article_title[:50]}...' 기사를 좋아요 했습니다."
+    )
+
+
+async def dislike_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """가장 최근 기사에 싫어요"""
+    chat_id = update.effective_chat.id
+    args = context.args
+
+    # 이유 (선택사항)
+    reason = " ".join(args).strip() if args else ""
+
+    # 최근 기사 확인
+    if chat_id not in recent_articles:
+        await update.message.reply_text(
+            "최근 받은 기사가 없습니다.\n"
+            "먼저 뉴스를 검색하거나 /scan, /rss_now를 실행해주세요."
+        )
+        return
+
+    article = recent_articles[chat_id]
+    article_url = article.get('url', '')
+    article_title = article.get('title', '제목 없음')
+
+    # 피드백 저장
+    from app.database.db_manager import get_db
+    import hashlib
+
+    db = get_db()
+    article_id = hashlib.md5(article_url.encode()).hexdigest()
+
+    db.add_feedback(
+        chat_id=chat_id,
+        article_id=article_id,
+        feedback_type="dislike",
+        feedback_value=-1,
+        comment=reason
+    )
+
+    msg = f"👎 피드백 감사합니다!\n\n'{article_title[:50]}...' 기사를 싫어요 했습니다."
+    if reason:
+        msg += f"\n\n이유: {reason}"
+
+    await update.message.reply_text(msg)
+
+
+async def feedback_stats_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """내 피드백 통계 보기"""
+    chat_id = update.effective_chat.id
+
+    from app.database.db_manager import get_db
+    db = get_db()
+
+    # 전체 피드백 가져오기
+    all_feedback = db.get_user_feedback(chat_id)
+
+    if not all_feedback:
+        await update.message.reply_text(
+            "아직 피드백이 없습니다.\n\n"
+            "/like 또는 /dislike 명령어로 기사에 피드백을 남겨보세요!"
+        )
+        return
+
+    # 통계 계산
+    likes = [f for f in all_feedback if f['feedback_type'] == 'like']
+    dislikes = [f for f in all_feedback if f['feedback_type'] == 'dislike']
+
+    msg_parts = []
+    msg_parts.append("📊 내 피드백 통계\n")
+    msg_parts.append("━━━━━━━━━━━━━━━━━━━━━━")
+    msg_parts.append(f"\n👍 좋아요: {len(likes)}개")
+    msg_parts.append(f"👎 싫어요: {len(dislikes)}개")
+    msg_parts.append(f"📝 전체: {len(all_feedback)}개")
+
+    # 최근 피드백 5개
+    recent = sorted(all_feedback, key=lambda x: x['created_at'], reverse=True)[:5]
+
+    if recent:
+        msg_parts.append("\n━━━━━━━━━━━━━━━━━━━━━━")
+        msg_parts.append("\n📋 최근 피드백:")
+
+        for fb in recent:
+            icon = "👍" if fb['feedback_type'] == 'like' else "👎"
+            comment = f" - {fb['comment']}" if fb['comment'] else ""
+            msg_parts.append(f"{icon} {fb['created_at'][:10]}{comment}")
+
+    msg_parts.append("\n━━━━━━━━━━━━━━━━━━━━━━")
+
+    await update.message.reply_text("\n".join(msg_parts))
+
+
+async def reaction_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    이모지 리액션 기반 피드백 처리
+    사용자가 봇 메시지에 👍 또는 👎 리액션을 달면 자동으로 피드백 저장
+    """
+    reaction: telegram.MessageReactionUpdated = update.message_reaction
+
+    if not reaction or not reaction.new_reaction:
+        return
+
+    message_id = reaction.message_id
+    chat_id = reaction.chat.id
+
+    # 해당 메시지가 기사 메시지인지 확인
+    if message_id not in message_to_article:
+        return
+
+    article = message_to_article[message_id]
+    article_url = article.get('url', '')
+    article_title = article.get('title', '제목 없음')
+
+    # 새로운 리액션 확인
+    new_reactions = reaction.new_reaction
+
+    # 👍 또는 👎 리액션이 있는지 확인
+    feedback_type = None
+    feedback_value = None
+
+    for reaction_item in new_reactions:
+        emoji = getattr(reaction_item, 'emoji', None)
+        if emoji == '👍':
+            feedback_type = 'like'
+            feedback_value = 1
+            break
+        elif emoji == '👎':
+            feedback_type = 'dislike'
+            feedback_value = -1
+            break
+
+    if not feedback_type:
+        return
+
+    # 피드백 저장
+    from app.database.db_manager import get_db
+    import hashlib
+
+    db = get_db()
+    article_id = hashlib.md5(article_url.encode()).hexdigest()
+
+    db.add_feedback(
+        chat_id=chat_id,
+        article_id=article_id,
+        feedback_type=feedback_type,
+        feedback_value=feedback_value,
+        comment=""
+    )
+
+    # 확인 메시지 (선택사항 - 조용히 처리하고 싶으면 이 부분 제거)
+    # icon = "👍" if feedback_type == "like" else "👎"
+    # await context.bot.send_message(
+    #     chat_id=chat_id,
+    #     text=f"{icon} 피드백 감사합니다!"
+    # )
+
+
 # ---------------- main ----------------
 
 def main():
@@ -996,9 +1527,10 @@ def main():
     )
 
     # 기본 안내
-    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("intro", intro))
     app.add_handler(CommandHandler("help", help_cmd))
     app.add_handler(CommandHandler("scoring_help", scoring_help_cmd))
+    app.add_handler(CommandHandler("breaking_help", breaking_help_cmd))
 
     # 관심 키워드 관련
     app.add_handler(CommandHandler("add", add_cmd))
@@ -1006,10 +1538,15 @@ def main():
     app.add_handler(CommandHandler("del", del_cmd))
     app.add_handler(CommandHandler("scan", scan_cmd))
 
-    # RSS 관련
+    # 뉴스 알림 (RSS 기반)
+    app.add_handler(CommandHandler("start", start_news))
+    app.add_handler(CommandHandler("stop", stop_news))
     app.add_handler(CommandHandler("rss_now", rss_now))
-    app.add_handler(CommandHandler("rss_auto_on", rss_auto_on))
-    app.add_handler(CommandHandler("rss_auto_off", rss_auto_off))
+
+    # 속보 관련
+    app.add_handler(CommandHandler("breaking_now", breaking_now))
+    app.add_handler(CommandHandler("breaking_auto_on", breaking_auto_on))
+    app.add_handler(CommandHandler("breaking_auto_off", breaking_auto_off))
 
     # 언론사 필터링 (Issue #16)
     app.add_handler(CommandHandler("block", block_cmd))
@@ -1029,6 +1566,7 @@ def main():
     app.add_handler(CommandHandler("60d_add", theme_60d_add_cmd))
     app.add_handler(CommandHandler("120d_add", theme_120d_add_cmd))
     app.add_handler(CommandHandler("225d_add", theme_225d_add_cmd))
+    app.add_handler(CommandHandler("themes", themes_cmd))
 
     # 분류별 스코어링
     app.add_handler(CommandHandler("class_add", class_add_cmd))
@@ -1038,6 +1576,17 @@ def main():
 
     # 스코어링 규칙 확인
     app.add_handler(CommandHandler("scores", scores_cmd))
+
+    # 유저 피드백
+    app.add_handler(CommandHandler("like", like_cmd))
+    app.add_handler(CommandHandler("dislike", dislike_cmd))
+    app.add_handler(CommandHandler("feedback", feedback_stats_cmd))
+
+    # 이모지 리액션 피드백 (동적 로드)
+    if MessageReactionHandler:
+        app.add_handler(MessageReactionHandler(reaction_handler))
+    else:
+        print("⚠️  MessageReactionHandler를 사용할 수 없습니다. 이모지 리액션 피드백이 비활성화됩니다.")
 
     # 일반 텍스트 → 뉴스 검색
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))

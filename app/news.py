@@ -160,5 +160,89 @@ def get_news_with_images(query: str, chat_id: int | None = None) -> list:
             'source': (article.get("source") or {}).get("name", ""),
             'score': main.score
         })
-    
+
+    return results
+
+
+def get_breaking_news(chat_id: int | None = None) -> list:
+    """
+    실시간 속보 가져오기 (NewsAPI top-headlines 사용)
+
+    Returns:
+        [
+            {
+                'title': str,
+                'url': str,
+                'image_url': str,
+                'source': str,
+                'score': int
+            },
+            ...
+        ]
+    """
+    url = "https://newsapi.org/v2/top-headlines"
+
+    # 한국 비즈니스/기술 뉴스 속보
+    params = {
+        "country": "kr",
+        "pageSize": 20,
+        "apiKey": NEWSAPI_KEY,
+    }
+
+    try:
+        res = requests.get(url, params=params, timeout=10)
+    except Exception:
+        return []
+
+    try:
+        data = res.json()
+    except Exception:
+        return []
+
+    if data.get("status") != "ok":
+        return []
+
+    articles = data.get("articles", [])
+    if not articles:
+        return []
+
+    # chat_id가 없으면 스코어링 없이 반환
+    if chat_id is None:
+        results = []
+        for a in articles[:10]:
+            results.append({
+                'title': a.get("title", "제목 없음"),
+                'url': a.get("url", ""),
+                'image_url': a.get("urlToImage", ""),
+                'source': (a.get("source") or {}).get("name", ""),
+                'score': 0
+            })
+        return results
+
+    # chat_id가 있으면 스코어링 + 클러스터링
+    from app.scoring.keyword_scoring import score_and_filter_articles_for_chat
+    from app.clustering.news_clusterer import cluster_scored_articles
+
+    # 1. 스코어링 및 필터링
+    scored = score_and_filter_articles_for_chat(articles, chat_id)
+    if not scored:
+        return []
+
+    # 2. 클러스터링
+    clustered = cluster_scored_articles(scored)
+
+    # 3. 이미지 URL과 함께 반환
+    results = []
+    for cluster in clustered:
+        main = cluster.main_article
+        article = main.article
+
+        results.append({
+            'title': article.get("title", "제목 없음"),
+            'url': article.get("url", article.get("link", "")),
+            'image_url': article.get("urlToImage", ""),
+            'source': (article.get("source") or {}).get("name", ""),
+            'score': main.score
+        })
+
     return results

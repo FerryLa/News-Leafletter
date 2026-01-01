@@ -85,8 +85,10 @@ def score_article_for_chat(article: dict, chat_id: int) -> ScoredArticle | None:
     - 유저 키워드 점수 (DB에서 직접 가져오기)
     - 테마 키워드 점수 (기간 제한)
     - 분류별 점수
+    - 속보/단독 자동 점수 (Issue #36)
     """
     from app.database.db_manager import get_db
+    from app.scoring.breaking_detector import get_breaking_score
 
     db = get_db()
     scoring_settings = db.get_user_scoring_settings(chat_id)
@@ -111,13 +113,19 @@ def score_article_for_chat(article: dict, chat_id: int) -> ScoredArticle | None:
 
     matched: dict[str, int] = {}
 
-    # 1. 유저 키워드 스코어링 (DB에서 직접 가져오기)
+    # 1. 속보/단독 자동 스코어링 (Issue #36)
+    title = article.get("title", "")
+    breaking_score = get_breaking_score(title)
+    if breaking_score > 0:
+        matched["[속보/단독]"] = breaking_score
+
+    # 2. 유저 키워드 스코어링 (DB에서 직접 가져오기)
     user_scores = _get_user_keyword_scores(chat_id)
     user_matches = _score_keywords(text, user_scores)
     for k, v in user_matches.items():
         matched[k] = matched.get(k, 0) + v
 
-    # 2. 테마 키워드 스코어링 (기간 제한)
+    # 3. 테마 키워드 스코어링 (기간 제한)
     theme_keywords = scoring_settings["theme_keywords"]
     now = datetime.now(timezone.utc)
 
@@ -135,7 +143,7 @@ def score_article_for_chat(article: dict, chat_id: int) -> ScoredArticle | None:
     for k, v in theme_matches.items():
         matched[k] = matched.get(k, 0) + v
 
-    # 3. 분류별 스코어링
+    # 4. 분류별 스코어링
     sector_scores = scoring_settings["sector_scores"]
     primary_sector = article.get("primary_sector", "").lower()
     if primary_sector and primary_sector in sector_scores:
