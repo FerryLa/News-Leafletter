@@ -1,11 +1,12 @@
 # bot.py - 이슈 #25 해결 + asyncio 에러 수정
 # 알람주기, 안내, 각종 커맨드, RSS스케줄링, 일반 텍스트 검색 등
 
-from telegram import Update
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     ApplicationBuilder,
     CommandHandler,
     MessageHandler,
+    CallbackQueryHandler,
     ContextTypes,
     filters,
 )
@@ -71,7 +72,9 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "RSS 기능:\n"
         "- /rss_now       : RSS에서 새로 들어온 기사 수동 확인\n"
         "- /rss_auto_on   : RSS 자동 알림 시작\n"
-        "- /rss_auto_off  : RSS 자동 알림 중지\n"
+        "- /rss_auto_off  : RSS 자동 알림 중지\n\n"
+        "피드백 조회:\n"
+        "- /feedback      : 나의 좋아요/싫어요 통계 확인\n"
     )
     await update.message.reply_text(text)
 
@@ -358,6 +361,7 @@ async def send_news_with_images(update: Update, news_items: list):
     ✅ 이슈 #21-4: 썸네일 활성화 및 포맷 통일
     ✅ 이슈 #25: 불필요한 메시지 제거
     ✅ 이슈 #16: 언론사 필터링 적용
+    ✅ 유저 피드백: 좋아요 버튼 추가
     """
     if not news_items:
         return
@@ -368,39 +372,50 @@ async def send_news_with_images(update: Update, news_items: list):
 
     if not news_items:
         return
-    
+
     for item in news_items:
         title = item['title']
         url = item['url']
         image_url = item.get('image_url', '')
         score = item.get('score', 0)
-        
+
         # ✅ 간결한 포맷 (이모티콘 제거)
         caption = f"[{score:+}] {title}\n{url}"
-        
+
+        # 좋아요 버튼 생성
+        keyboard = InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton("👍 좋아요", callback_data=f"like:{url}"),
+                InlineKeyboardButton("👎 싫어요", callback_data=f"dislike:{url}")
+            ]
+        ])
+
         # 이미지가 있으면 photo로, 없으면 텍스트로 (썸네일 활성화)
         try:
             if image_url and image_url.startswith('http'):
                 # 이미지가 있을 때
                 await update.message.reply_photo(
                     photo=image_url,
-                    caption=caption
+                    caption=caption,
+                    reply_markup=keyboard
                 )
             else:
                 # ✅ 이슈 #21-4: 썸네일 활성화
                 # 이미지 없어도 웹페이지 미리보기 표시
                 await update.message.reply_text(
                     text=caption,
-                    disable_web_page_preview=False  # 썸네일 활성화!
+                    disable_web_page_preview=False,  # 썸네일 활성화!
+                    reply_markup=keyboard
                 )
         except Exception as e:
             # 에러 발생 시 폴백 (썸네일 없이)
             print(f"메시지 전송 실패: {e}")
             await update.message.reply_text(
                 text=caption,
-                disable_web_page_preview=True  # 에러 시 썸네일 비활성화
+                disable_web_page_preview=True,  # 에러 시 썸네일 비활성화
+                reply_markup=keyboard
             )
-        
+
         # 메시지 간 간격
         await asyncio.sleep(0.3)
 
@@ -463,32 +478,43 @@ async def rss_auto_loop(chat_id: int, bot):
                         url = item['url']
                         image_url = item.get('image_url', '')
                         score = item.get('score', 0)
-                        
+
                         # ✅ 간결한 포맷 (이모티콘 제거)
                         caption = f"[{score:+}] {title}\n{url}"
-                        
+
+                        # 좋아요 버튼 생성
+                        keyboard = InlineKeyboardMarkup([
+                            [
+                                InlineKeyboardButton("👍 좋아요", callback_data=f"like:{url}"),
+                                InlineKeyboardButton("👎 싫어요", callback_data=f"dislike:{url}")
+                            ]
+                        ])
+
                         try:
                             if image_url and image_url.startswith('http'):
                                 await bot.send_photo(
                                     chat_id=chat_id,
                                     photo=image_url,
-                                    caption=caption
+                                    caption=caption,
+                                    reply_markup=keyboard
                                 )
                             else:
                                 # ✅ 이슈 #21-4: 썸네일 활성화
                                 await bot.send_message(
                                     chat_id=chat_id,
                                     text=caption,
-                                    disable_web_page_preview=False  # 썸네일 활성화!
+                                    disable_web_page_preview=False,  # 썸네일 활성화!
+                                    reply_markup=keyboard
                                 )
                         except Exception as e:
                             print(f"RSS 전송 실패: {e}")
                             await bot.send_message(
                                 chat_id=chat_id,
                                 text=caption,
-                                disable_web_page_preview=True  # 에러 시 비활성화
+                                disable_web_page_preview=True,  # 에러 시 비활성화
+                                reply_markup=keyboard
                             )
-                        
+
                         await asyncio.sleep(0.3)
             
             # ✅ 이슈 #25: "새 기사 없음" 메시지 완전 제거
@@ -651,6 +677,83 @@ async def sources_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         msg += f"\n... 외 {len(all_sources) - 20}개"
 
     await update.message.reply_text(msg)
+
+
+# ---------------- 유저 피드백 핸들러 ----------------
+
+async def handle_feedback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    유저 피드백 처리 (좋아요/싫어요 버튼 클릭)
+    """
+    query = update.callback_query
+    await query.answer()
+
+    chat_id = query.message.chat_id
+    data = query.data
+
+    # callback_data 파싱: "like:url" 또는 "dislike:url"
+    try:
+        feedback_type, article_url = data.split(":", 1)
+    except ValueError:
+        await query.edit_message_reply_markup(reply_markup=None)
+        return
+
+    # 메시지에서 제목 추출
+    # 메시지 포맷: "[+2] 제목\nURL"
+    message_text = query.message.caption or query.message.text or ""
+    article_title = ""
+
+    if message_text:
+        lines = message_text.split('\n')
+        if len(lines) >= 1:
+            # 첫 번째 줄에서 점수 제거하고 제목 추출
+            first_line = lines[0]
+            # "[+2] 제목" -> "제목"
+            if '] ' in first_line:
+                article_title = first_line.split('] ', 1)[1]
+            else:
+                article_title = first_line
+
+    # article_id는 URL을 해시값으로 사용
+    import hashlib
+    article_id = hashlib.md5(article_url.encode()).hexdigest()
+
+    # 피드백 값 설정
+    feedback_value = 1 if feedback_type == "like" else -1
+
+    # 데이터베이스에 저장
+    db = get_db()
+    success = db.add_feedback(
+        chat_id=chat_id,
+        article_id=article_id,
+        feedback_type=feedback_type,
+        feedback_value=feedback_value,
+        comment="",
+        article_title=article_title,
+        article_url=article_url
+    )
+
+    if success:
+        # 버튼 텍스트 업데이트 (이미 눌렀다는 표시)
+        if feedback_type == "like":
+            new_keyboard = InlineKeyboardMarkup([
+                [
+                    InlineKeyboardButton("✅ 좋아요", callback_data=f"like:{article_url}"),
+                    InlineKeyboardButton("👎 싫어요", callback_data=f"dislike:{article_url}")
+                ]
+            ])
+        else:
+            new_keyboard = InlineKeyboardMarkup([
+                [
+                    InlineKeyboardButton("👍 좋아요", callback_data=f"like:{article_url}"),
+                    InlineKeyboardButton("✅ 싫어요", callback_data=f"dislike:{article_url}")
+                ]
+            ])
+
+        await query.edit_message_reply_markup(reply_markup=new_keyboard)
+    else:
+        # 실패 시 (이미 피드백을 남긴 경우)
+        await query.answer("피드백이 저장되었습니다!", show_alert=False)
 
 
 # ---------------- 스코어링 설정 (블랙리스트/화이트리스트) ----------------
@@ -900,6 +1003,66 @@ async def exclude_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
+async def feedback_stats_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """나의 피드백 통계 확인"""
+    chat_id = update.effective_chat.id
+    db = get_db()
+
+    # 전체 피드백 조회
+    all_feedback = db.get_user_feedback(chat_id)
+
+    if not all_feedback:
+        await update.message.reply_text(
+            "아직 피드백이 없습니다.\n"
+            "뉴스에서 좋아요/싫어요 버튼을 눌러보세요!"
+        )
+        return
+
+    # 타입별 분류
+    likes = [fb for fb in all_feedback if fb['feedback_type'] == 'like']
+    dislikes = [fb for fb in all_feedback if fb['feedback_type'] == 'dislike']
+
+    # 통계 메시지 생성
+    msg_parts = []
+    msg_parts.append("📊 나의 피드백 통계\n")
+    msg_parts.append("━━━━━━━━━━━━━━━━━━━━━━")
+    msg_parts.append(f"\n총 피드백: {len(all_feedback)}개")
+    msg_parts.append(f"  • 👍 좋아요: {len(likes)}개 ({len(likes)/len(all_feedback)*100:.1f}%)")
+    msg_parts.append(f"  • 👎 싫어요: {len(dislikes)}개 ({len(dislikes)/len(all_feedback)*100:.1f}%)")
+
+    # 좋아요 뉴스 제목
+    if likes:
+        msg_parts.append("\n━━━━━━━━━━━━━━━━━━━━━━")
+        msg_parts.append("👍 좋아요 뉴스 (최근 5개)")
+        msg_parts.append("━━━━━━━━━━━━━━━━━━━━━━")
+        for i, fb in enumerate(likes[:5], 1):
+            title = fb.get('article_title', '')
+            if title:
+                # 제목이 너무 길면 잘라내기
+                if len(title) > 50:
+                    title = title[:47] + "..."
+                msg_parts.append(f"{i}. {title}")
+            else:
+                msg_parts.append(f"{i}. (제목 없음)")
+
+    # 싫어요 뉴스 제목
+    if dislikes:
+        msg_parts.append("\n━━━━━━━━━━━━━━━━━━━━━━")
+        msg_parts.append("👎 싫어요 뉴스 (최근 5개)")
+        msg_parts.append("━━━━━━━━━━━━━━━━━━━━━━")
+        for i, fb in enumerate(dislikes[:5], 1):
+            title = fb.get('article_title', '')
+            if title:
+                # 제목이 너무 길면 잘라내기
+                if len(title) > 50:
+                    title = title[:47] + "..."
+                msg_parts.append(f"{i}. {title}")
+            else:
+                msg_parts.append(f"{i}. (제목 없음)")
+
+    await update.message.reply_text("\n".join(msg_parts))
+
+
 async def scores_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """전체 스코어링 규칙 확인"""
     chat_id = update.effective_chat.id
@@ -1039,8 +1202,14 @@ def main():
     # 스코어링 규칙 확인
     app.add_handler(CommandHandler("scores", scores_cmd))
 
+    # 피드백 조회
+    app.add_handler(CommandHandler("feedback", feedback_stats_cmd))
+
     # 일반 텍스트 → 뉴스 검색
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
+
+    # 유저 피드백 (좋아요/싫어요 버튼)
+    app.add_handler(CallbackQueryHandler(handle_feedback))
 
     app.run_polling()
 

@@ -207,6 +207,9 @@ class DatabaseManager:
 
         # ✅ 키워드 점수 컬럼 마이그레이션
         self._migrate_keyword_score_column()
+
+        # ✅ 피드백 테이블에 제목/URL 컬럼 추가
+        self._migrate_feedback_title_url()
     
     def _update_schema_version(self) -> None:
         """스키마 버전 업데이트"""
@@ -528,6 +531,34 @@ class DatabaseManager:
             pass  # 조용히 무시
             conn.rollback()
 
+
+    def _migrate_feedback_title_url(self) -> None:
+        """
+        피드백 테이블에 article_title, article_url 컬럼 추가
+        """
+        conn = self._get_connection()
+        cursor = conn.cursor()
+
+        try:
+            # 컬럼 존재 여부 확인
+            cursor.execute("PRAGMA table_info(user_feedback)")
+            columns = {row[1] for row in cursor.fetchall()}
+
+            if 'article_title' not in columns:
+                conn.execute("ALTER TABLE user_feedback ADD COLUMN article_title TEXT")
+
+            if 'article_url' not in columns:
+                conn.execute("ALTER TABLE user_feedback ADD COLUMN article_url TEXT")
+
+            conn.commit()
+
+        except sqlite3.OperationalError as e:
+            if "duplicate column name" not in str(e):
+                pass  # 조용히 무시
+            conn.rollback()
+        except Exception as e:
+            pass  # 조용히 무시
+            conn.rollback()
 
     # ==================== 유저 키워드 관련 ====================
     
@@ -1030,33 +1061,54 @@ class DatabaseManager:
         article_id: str,
         feedback_type: str,
         feedback_value: int = 0,
-        comment: str = ""
+        comment: str = "",
+        article_title: str = "",
+        article_url: str = ""
     ) -> bool:
         """
         유저 피드백 추가
-        
+
         Args:
             chat_id: 텔레그램 chat ID
             article_id: 기사 ID
             feedback_type: 피드백 타입 (like, dislike, bookmark, rating 등)
             feedback_value: 피드백 값 (예: 별점 1-5)
             comment: 추가 코멘트
-        
+            article_title: 기사 제목 (조회용)
+            article_url: 기사 URL (조회용)
+
         Returns:
             True if 성공
         """
         conn = self._get_connection()
         cursor = conn.cursor()
-        
+
+        # article_title, article_url 컬럼 존재 여부 확인
+        cursor.execute("PRAGMA table_info(user_feedback)")
+        columns = {row[1] for row in cursor.fetchall()}
+        has_title = 'article_title' in columns
+        has_url = 'article_url' in columns
+
         try:
-            cursor.execute(
-                """
-                INSERT OR REPLACE INTO user_feedback
-                (chat_id, article_id, feedback_type, feedback_value, comment)
-                VALUES (?, ?, ?, ?, ?)
-                """,
-                (chat_id, article_id, feedback_type, feedback_value, comment)
-            )
+            if has_title and has_url:
+                cursor.execute(
+                    """
+                    INSERT OR REPLACE INTO user_feedback
+                    (chat_id, article_id, feedback_type, feedback_value, comment, article_title, article_url)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (chat_id, article_id, feedback_type, feedback_value, comment, article_title, article_url)
+                )
+            else:
+                # 이전 버전 호환성
+                cursor.execute(
+                    """
+                    INSERT OR REPLACE INTO user_feedback
+                    (chat_id, article_id, feedback_type, feedback_value, comment)
+                    VALUES (?, ?, ?, ?, ?)
+                    """,
+                    (chat_id, article_id, feedback_type, feedback_value, comment)
+                )
             conn.commit()
             return True
         except Exception:
@@ -1070,38 +1122,83 @@ class DatabaseManager:
         """특정 유저의 피드백 조회"""
         conn = self._get_connection()
         cursor = conn.cursor()
-        
-        if feedback_type:
-            cursor.execute(
-                """
-                SELECT article_id, feedback_type, feedback_value, comment, created_at
-                FROM user_feedback
-                WHERE chat_id = ? AND feedback_type = ?
-                ORDER BY created_at DESC
-                """,
-                (chat_id, feedback_type)
-            )
+
+        # article_title, article_url 컬럼 존재 여부 확인
+        cursor.execute("PRAGMA table_info(user_feedback)")
+        columns = {row[1] for row in cursor.fetchall()}
+        has_title = 'article_title' in columns
+        has_url = 'article_url' in columns
+
+        if has_title and has_url:
+            # 새 버전
+            if feedback_type:
+                cursor.execute(
+                    """
+                    SELECT article_id, feedback_type, feedback_value, comment, created_at, article_title, article_url
+                    FROM user_feedback
+                    WHERE chat_id = ? AND feedback_type = ?
+                    ORDER BY created_at DESC
+                    """,
+                    (chat_id, feedback_type)
+                )
+            else:
+                cursor.execute(
+                    """
+                    SELECT article_id, feedback_type, feedback_value, comment, created_at, article_title, article_url
+                    FROM user_feedback
+                    WHERE chat_id = ?
+                    ORDER BY created_at DESC
+                    """,
+                    (chat_id,)
+                )
+
+            return [
+                {
+                    "article_id": row[0],
+                    "feedback_type": row[1],
+                    "feedback_value": row[2],
+                    "comment": row[3],
+                    "created_at": row[4],
+                    "article_title": row[5] or "",
+                    "article_url": row[6] or ""
+                }
+                for row in cursor.fetchall()
+            ]
         else:
-            cursor.execute(
-                """
-                SELECT article_id, feedback_type, feedback_value, comment, created_at
-                FROM user_feedback
-                WHERE chat_id = ?
-                ORDER BY created_at DESC
-                """,
-                (chat_id,)
-            )
-        
-        return [
-            {
-                "article_id": row[0],
-                "feedback_type": row[1],
-                "feedback_value": row[2],
-                "comment": row[3],
-                "created_at": row[4]
-            }
-            for row in cursor.fetchall()
-        ]
+            # 이전 버전 호환성
+            if feedback_type:
+                cursor.execute(
+                    """
+                    SELECT article_id, feedback_type, feedback_value, comment, created_at
+                    FROM user_feedback
+                    WHERE chat_id = ? AND feedback_type = ?
+                    ORDER BY created_at DESC
+                    """,
+                    (chat_id, feedback_type)
+                )
+            else:
+                cursor.execute(
+                    """
+                    SELECT article_id, feedback_type, feedback_value, comment, created_at
+                    FROM user_feedback
+                    WHERE chat_id = ?
+                    ORDER BY created_at DESC
+                    """,
+                    (chat_id,)
+                )
+
+            return [
+                {
+                    "article_id": row[0],
+                    "feedback_type": row[1],
+                    "feedback_value": row[2],
+                    "comment": row[3],
+                    "created_at": row[4],
+                    "article_title": "",
+                    "article_url": ""
+                }
+                for row in cursor.fetchall()
+            ]
     
     def get_article_feedback_stats(self, article_id: str) -> Dict[str, Any]:
         """특정 기사의 피드백 통계"""
