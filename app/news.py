@@ -2,6 +2,8 @@
 import requests
 from config import NEWSAPI_KEY
 from app.super_controller import super_controller
+# Issue #36: NewsAPI 할당량 관리
+from app.newsapi_rate_limiter import get_rate_limiter
 
 
 def search_news(query: str, chat_id: int | None = None) -> str:
@@ -82,7 +84,9 @@ def get_news_with_images(query: str, chat_id: int | None = None) -> list:
     """
     뉴스를 검색하고 이미지 URL과 함께 리스트로 반환
     (봇에서 개별 메시지로 전송하기 위함)
-    
+
+    Issue #36: NewsAPI 할당량 관리 적용
+
     Returns:
         [
             {
@@ -95,6 +99,12 @@ def get_news_with_images(query: str, chat_id: int | None = None) -> list:
             ...
         ]
     """
+    # Issue #36: 할당량 체크
+    limiter = get_rate_limiter(super_controller.get_newsapi_daily_limit())
+    if not limiter.can_call():
+        print(f"⚠️ NewsAPI 할당량 초과 (하루 제한: {limiter.daily_limit})")
+        return []
+
     url = "https://newsapi.org/v2/everything"
 
     params = {
@@ -107,6 +117,8 @@ def get_news_with_images(query: str, chat_id: int | None = None) -> list:
 
     try:
         res = requests.get(url, params=params, timeout=10)
+        # 호출 성공 시 기록
+        limiter.record_call()
     except Exception:
         return []
 
@@ -168,6 +180,8 @@ def get_breaking_news(chat_id: int | None = None) -> list:
     """
     실시간 속보 가져오기 (NewsAPI top-headlines 사용)
 
+    Issue #36: NewsAPI 할당량 관리 적용
+
     Returns:
         [
             {
@@ -180,6 +194,12 @@ def get_breaking_news(chat_id: int | None = None) -> list:
             ...
         ]
     """
+    # Issue #36: 할당량 체크
+    limiter = get_rate_limiter(super_controller.get_newsapi_daily_limit())
+    if not limiter.can_call():
+        print(f"⚠️ NewsAPI 할당량 초과 (하루 제한: {limiter.daily_limit})")
+        return []
+
     url = "https://newsapi.org/v2/top-headlines"
 
     # 한국 비즈니스/기술 뉴스 속보
@@ -191,6 +211,8 @@ def get_breaking_news(chat_id: int | None = None) -> list:
 
     try:
         res = requests.get(url, params=params, timeout=10)
+        # 호출 성공 시 기록
+        limiter.record_call()
     except Exception:
         return []
 
