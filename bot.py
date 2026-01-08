@@ -382,11 +382,15 @@ async def send_news_with_images(update: Update, news_items: list):
         # ✅ 간결한 포맷 (이모티콘 제거)
         caption = f"[{score:+}] {title}\n{url}"
 
+        # Issue #36: URL 해시값 사용 (64바이트 제한 대응)
+        import hashlib
+        url_hash = hashlib.md5(url.encode()).hexdigest()[:16]
+
         # 좋아요 버튼 생성
         keyboard = InlineKeyboardMarkup([
             [
-                InlineKeyboardButton("👍 좋아요", callback_data=f"like:{url}"),
-                InlineKeyboardButton("👎 싫어요", callback_data=f"dislike:{url}")
+                InlineKeyboardButton("👍 좋아요", callback_data=f"like:{url_hash}"),
+                InlineKeyboardButton("👎 싫어요", callback_data=f"dislike:{url_hash}")
             ]
         ])
 
@@ -482,11 +486,15 @@ async def rss_auto_loop(chat_id: int, bot):
                         # ✅ 간결한 포맷 (이모티콘 제거)
                         caption = f"[{score:+}] {title}\n{url}"
 
+                        # Issue #36: URL 해시값 사용 (64바이트 제한 대응)
+                        import hashlib
+                        url_hash = hashlib.md5(url.encode()).hexdigest()[:16]
+
                         # 좋아요 버튼 생성
                         keyboard = InlineKeyboardMarkup([
                             [
-                                InlineKeyboardButton("👍 좋아요", callback_data=f"like:{url}"),
-                                InlineKeyboardButton("👎 싫어요", callback_data=f"dislike:{url}")
+                                InlineKeyboardButton("👍 좋아요", callback_data=f"like:{url_hash}"),
+                                InlineKeyboardButton("👎 싫어요", callback_data=f"dislike:{url_hash}")
                             ]
                         ])
 

@@ -66,10 +66,10 @@
     "page_size": 10
   },
   "rss": {
-    "auto_interval": 120
+    "auto_interval": 10
   },
   "newsapi": {
-    "polling_interval": 600,
+    "polling_interval": 900,
     "daily_limit": 100
   },
   "bot": {
