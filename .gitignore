@@ -30,3 +30,4 @@ data/rss_state.json
 # Cloaudflare credentials
 .claude/
 nul
+tmpclaude-*-cwd
