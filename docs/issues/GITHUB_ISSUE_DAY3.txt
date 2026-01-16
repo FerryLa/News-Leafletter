@@ -1,0 +1,246 @@
+# [마일스톤4-Day3] 데이터 내보내기 파이프라인
+
+## 📌 간단 개요
+ML 실험용 CSV/JSON 데이터셋 생성 파이프라인 구축. 기사, 피드백, 레이블, 키워드를 통합한 학습 데이터셋 생성.
+
+## 🎯 목표
+1. **통합 데이터셋 생성**: 기사 + 피드백 + 레이블 + 키워드 통합 쿼리 구축
+2. **다양한 포맷 지원**: CSV (테이블 분석용), JSON (임베딩 실험용) 내보내기
+3. **유연한 필터링**: 날짜, 섹터, 레이블, 피드백 수 등 다양한 조건으로 필터링
+4. **데이터 품질 보장**: 내보낸 데이터셋 자동 검증 기능
+
+## 🔧 개선사항
+
+### 1. 통합 데이터셋 쿼리
+**기존 문제**:
+- 데이터가 여러 테이블에 분산 (articles, user_feedback, article_labels)
+- 수동으로 조인하여 데이터 추출 필요
+- ML 실험 시마다 데이터 준비 반복
+
+**개선 방향**:
+- [ ] 통합 쿼리 작성
+  ```sql
+  SELECT
+      a.article_id, a.title, a.summary, a.content,
+      a.primary_sector, a.secondary_sector, a.keyword_extracted,
+      a.source_name, a.published_at, a.content_length,
+      GROUP_CONCAT(DISTINCT l.label_value) as labels,
+      COUNT(DISTINCT uf.id) FILTER (WHERE uf.feedback_type = 'like') as likes,
+      COUNT(DISTINCT uf.id) FILTER (WHERE uf.feedback_type = 'dislike') as dislikes
+  FROM articles a
+  LEFT JOIN article_labels l ON a.article_id = l.article_id
+  LEFT JOIN user_feedback uf ON a.article_id = uf.article_id
+  GROUP BY a.article_id
+  ```
+- [ ] 성능 최적화 (인덱스 활용)
+- [ ] 대용량 데이터 배치 처리
+
+### 2. CSV 포맷 내보내기
+**기존 문제**:
+- ML 라이브러리(pandas, scikit-learn)에서 바로 사용 불가
+- Excel로 데이터 확인 어려움
+- 수동 전처리 필요
+
+**개선 방향**:
+- [ ] CSV 내보내기 구현
+  - UTF-8 with BOM (Excel 호환)
+  - 컬럼 순서 정의: article_id, title, summary, content, sector, labels, likes, dislikes, published_at
+  - 쉼표(,) 포함 텍스트 처리
+  - 줄바꿈 문자 이스케이프
+
+- [ ] pandas DataFrame 형태로 로드 가능
+  ```python
+  import pandas as pd
+  df = pd.read_csv('ml_dataset.csv')
+  ```
+
+### 3. JSON 포맷 내보내기
+**기존 문제**:
+- 계층 구조 데이터 표현 불가 (CSV 한계)
+- 임베딩 실험 시 JSON 필요
+- 배열/객체 형태 메타데이터 처리 어려움
+
+**개선 방향**:
+- [ ] JSON 내보내기 구현
+  - 메타데이터 포함 (내보내기 시간, 총 기사 수)
+  - 계층 구조 유지
+  ```json
+  {
+    "metadata": {
+      "exported_at": "2026-01-11T12:00:00Z",
+      "total_articles": 1234,
+      "filters": {
+        "days": 30,
+        "sector": "crypto",
+        "min_feedback": 2
+      }
+    },
+    "articles": [
+      {
+        "id": "abc123",
+        "title": "비트코인 ETF 승인",
+        "summary": "...",
+        "content": "...",
+        "labels": ["positive", "breaking"],
+        "feedback": {"likes": 5, "dislikes": 1},
+        "sector": {"primary": "crypto", "secondary": "investment"},
+        "keywords": ["비트코인", "ETF", "SEC"]
+      }
+    ]
+  }
+  ```
+- [ ] Pretty print (들여쓰기)로 가독성 향상
+
+### 4. 필터링 옵션
+**기존 문제**:
+- 전체 데이터만 내보내기 가능
+- 특정 조건 데이터 추출 어려움
+- 실험별 데이터셋 수동 구성 필요
+
+**개선 방향**:
+- [ ] 다양한 필터링 옵션
+  - `--days N`: 최근 N일 데이터만
+  - `--sector SECTOR`: 특정 섹터만 (crypto, tech 등)
+  - `--label LABEL`: 특정 레이블 포함 기사만
+  - `--min-feedback N`: 최소 N개 이상 피드백 받은 기사만
+  - `--min-length N`: 본문 길이 N자 이상만
+  - `--labeled-only`: 레이블 있는 기사만
+
+- [ ] 필터 조합 가능
+  ```bash
+  python export_ml_dataset.py --days 30 --sector crypto --min-feedback 2
+  ```
+
+### 5. 데이터 검증
+**기존 문제**:
+- 내보낸 데이터 품질 확인 안 함
+- Null 값, 타입 오류 등 문제 발견 늦음
+- 데이터셋 통계 수동 계산
+
+**개선 방향**:
+- [ ] 자동 검증 기능
+  - 내보낸 파일 로드 테스트
+  - 컬럼 타입 검증 (int, str, list)
+  - Null 값 비율 계산
+  - 데이터셋 요약 출력
+    - 총 기사 수
+    - 섹터별 분포
+    - 레이블별 분포
+    - 평균 content_length
+
+## ✨ 기대효과
+
+### 1. ML 실험 즉시 시작 가능
+- **효과**: 데이터 준비 시간 제로, 바로 모델 학습 시작
+- **지표**: 데이터셋 생성 시간 < 30초 (1,000개 기사 기준)
+
+### 2. 다양한 실험 지원
+- **효과**: CSV (pandas), JSON (임베딩) 모두 지원으로 유연성 확보
+- **지표**: 3가지 이상 ML 실험 (분류, 임베딩, 클러스터링) 즉시 가능
+
+### 3. 맞춤형 데이터셋 구성
+- **효과**: 필터링으로 실험 목적에 맞는 데이터만 추출
+- **지표**: 10가지 이상 필터 조합으로 다양한 데이터셋 생성
+
+### 4. 데이터 품질 보장
+- **효과**: 자동 검증으로 품질 이슈 사전 발견
+- **지표**: Null 값 비율 < 5%, 타입 오류 0건
+
+## 📦 산출물
+- [ ] **내보내기 스크립트**: `scripts/export_ml_dataset.py`
+  - argparse로 명령행 인자 파싱
+  - CSV/JSON 내보내기 함수
+  - 필터링 로직
+  - 검증 기능
+
+- [ ] **사용 예시**:
+  ```bash
+  # CSV 내보내기 (최근 30일, 암호화폐 섹터)
+  python scripts/export_ml_dataset.py \
+    --format csv \
+    --days 30 \
+    --sector crypto \
+    --output data/csv/crypto_30days.csv
+
+  # JSON 내보내기 (레이블 있는 기사만, 최소 피드백 2개)
+  python scripts/export_ml_dataset.py \
+    --format json \
+    --labeled-only \
+    --min-feedback 2 \
+    --output data/csv/labeled_feedback.json
+
+  # 전체 데이터 내보내기
+  python scripts/export_ml_dataset.py \
+    --format csv \
+    --output data/csv/full_dataset.csv
+  ```
+
+- [ ] **데이터셋 포맷 문서**: `docs/DATASET_FORMAT.md`
+  - CSV 컬럼 설명
+  - JSON 스키마 정의
+  - 사용 예시 (pandas, json 로드)
+
+## 📝 작업 체크리스트
+
+### 1단계: 통합 쿼리 작성
+- [ ] SQL 쿼리 작성 및 테스트
+- [ ] 성능 측정 (1,000개 기사 기준)
+- [ ] 인덱스 최적화
+
+### 2단계: CSV 내보내기
+- [ ] `export_ml_dataset.py` 기본 구조 작성
+- [ ] CSV writer 구현
+  - UTF-8 BOM 처리
+  - 컬럼 순서 정의
+  - 텍스트 이스케이프
+- [ ] 샘플 CSV 생성 및 pandas 로드 테스트
+
+### 3단계: JSON 내보내기
+- [ ] JSON 내보내기 함수 구현
+  - 메타데이터 추가
+  - 계층 구조 유지
+  - Pretty print
+- [ ] 샘플 JSON 생성 및 로드 테스트
+
+### 4단계: 필터링 옵션
+- [ ] argparse 설정
+  - --format, --days, --sector, --label
+  - --min-feedback, --min-length, --labeled-only
+- [ ] 필터링 로직 구현
+- [ ] 필터 조합 테스트
+
+### 5단계: 검증 기능
+- [ ] 검증 함수 구현
+  - 파일 로드 테스트
+  - 타입 검증
+  - Null 비율 계산
+- [ ] 데이터셋 요약 출력
+- [ ] 검증 통과 확인
+
+### 6단계: 문서화
+- [ ] `docs/DATASET_FORMAT.md` 작성
+  - CSV 컬럼 설명
+  - JSON 스키마
+  - 사용 예시
+- [ ] README 스크립트 섹션 추가
+
+## 📚 참고
+- [MILESTONE4_PLAN.md](../MILESTONE4_PLAN.md): 전체 마일스톤 계획
+- [pandas.read_csv](https://pandas.pydata.org/docs/reference/api/pandas.read_csv.html)
+- [Python json module](https://docs.python.org/3/library/json.html)
+
+## ✅ 완료 조건
+- [ ] CSV 내보내기 스크립트 동작 확인
+- [ ] JSON 내보내기 스크립트 동작 확인
+- [ ] 6가지 필터 옵션 모두 테스트 완료
+- [ ] pandas로 CSV 로드 성공
+- [ ] 검증 기능 동작 확인
+- [ ] 데이터셋 포맷 문서 작성 완료
+- [ ] 샘플 데이터셋 생성 (CSV, JSON 각 1개)
+
+---
+
+**Labels**: `milestone-4`, `feature`, `day-3`
+**Assignees**: @FerryLa
+**Milestone**: 마일스톤 4 (ML 데이터 쌓기)
+**Estimated Time**: 1 day

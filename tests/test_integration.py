@@ -98,12 +98,15 @@ def test_super_controller_config():
         print(f"  - NewsAPI 간격: {newsapi_interval}초")
         print(f"  - NewsAPI 일일 제한: {newsapi_limit}회")
 
-        # 검증
-        if rss_interval == 120 and newsapi_interval == 600 and newsapi_limit == 100:
+        # 검증 (사용자 설정에 따라 변경 가능)
+        expected_rss = 10  # 사용자가 10초로 설정
+        expected_newsapi = 900  # 15분 (안전한 할당량)
+
+        if rss_interval == expected_rss and newsapi_interval == expected_newsapi and newsapi_limit == 100:
             print("[PASS] 설정값 확인 성공")
             return True
         else:
-            print("[FAIL] 설정값 불일치")
+            print(f"[FAIL] 설정값 불일치 (기대: RSS={expected_rss}, NewsAPI={expected_newsapi})")
             return False
     except Exception as e:
         print(f"[FAIL] 설정 컨트롤러 실패: {e}")
