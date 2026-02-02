@@ -23,7 +23,7 @@ RSS_SOURCES = [
     "https://kosis.kr/rss/noticeRss.do",                  # 통계청 RSS
     "https://kosis.kr/rss/kosis100Rss.do",                # KOSIS 주요지표
     "https://www.oecd.org/rss",                           # OECD 경제보고서
-    "https://www.imf.org/external/rss/feeds.aspx?category=News",  # IMF 경제 뉴스
+    # "https://www.imf.org/external/rss/feeds.aspx?category=News",  # IMF 경제 뉴스 # 접속 불가로 제외 
 
     # 암호화폐 뉴스
     "https://www.coindesk.com/arc/outboundfeeds/rss",     # 코인데스크

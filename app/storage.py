@@ -23,19 +23,20 @@ def get_keywords(chat_id: int) -> List[str]:
     return db.get_keywords(chat_id)
 
 
-def add_keyword(chat_id: int, keyword: str) -> List[str]:
+def add_keyword(chat_id: int, keyword: str, score: int = 1) -> List[str]:
     """
     키워드 추가
-    
+
     Args:
         chat_id: 텔레그램 chat ID
         keyword: 추가할 키워드
-    
+        score: 점수 (기본값 1)
+
     Returns:
         업데이트된 전체 키워드 리스트
     """
     db = get_db()
-    db.add_keyword(chat_id, keyword)
+    db.add_keyword(chat_id, keyword, score)
     return db.get_keywords(chat_id)
 
 

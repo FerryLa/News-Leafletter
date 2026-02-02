@@ -277,23 +277,51 @@ def cluster_scored_articles(scored_articles: List[ScoredArticle]) -> List[Cluste
     스코어링된 기사를 클러스터링하는 편의 함수
     섹터 분류도 함께 수행
 
+    Issue #36: 단독 뉴스는 클러스터링 제외 (언론사별 모두 전달)
+
     Args:
         scored_articles: ScoredArticle 리스트
 
     Returns:
         ClusteredNews 리스트 (섹터 정보 포함)
     """
+    from app.scoring.breaking_detector import is_exclusive_news
+
     global _clusterer_instance, _articles_cache
 
     if _clusterer_instance is None:
         _clusterer_instance = NewsClusterer()
 
-    # 기사 캐시 (클러스터링 중 접근용)
-    _articles_cache = scored_articles
-    _clusterer_instance._articles = scored_articles
+    # Issue #36: 단독 뉴스와 일반 뉴스 분리
+    exclusive_articles = []
+    regular_articles = []
 
-    # 클러스터링 수행
-    clustered = _clusterer_instance.cluster(scored_articles)
+    for sa in scored_articles:
+        title = sa.article.get("title", "")
+        if is_exclusive_news(title):
+            # 단독 뉴스는 클러스터링 제외
+            exclusive_articles.append(sa)
+        else:
+            # 일반 뉴스(속보 포함)는 클러스터링
+            regular_articles.append(sa)
+
+    # 기사 캐시 (클러스터링 중 접근용)
+    _articles_cache = regular_articles
+    _clusterer_instance._articles = regular_articles
+
+    # 일반 뉴스만 클러스터링 수행
+    clustered = _clusterer_instance.cluster(regular_articles)
+
+    # 단독 뉴스를 개별 클러스터로 추가
+    for idx, sa in enumerate(exclusive_articles):
+        clustered.append(ClusteredNews(
+            cluster_id=len(clustered) + idx,
+            main_article=sa,
+            related_articles=[],
+            cluster_keywords=["단독"],
+            total_count=1,
+            avg_score=float(sa.score)
+        ))
 
     # 섹터 분류 활성화 여부 확인
     sector_config = super_controller.get_sector_classification_config()

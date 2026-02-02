@@ -82,10 +82,12 @@ class DatabaseManager:
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 chat_id INTEGER NOT NULL,
                 keyword TEXT NOT NULL,
+                score INTEGER DEFAULT 1,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 UNIQUE(chat_id, keyword)
             );
-            CREATE INDEX IF NOT EXISTS idx_user_keywords_chat 
+            CREATE INDEX IF NOT EXISTS idx_user_keywords_chat
                 ON user_keywords(chat_id);
             
             -- RSS 캐시 (중복 제거용)
@@ -199,6 +201,15 @@ class DatabaseManager:
 
         # ✅ Issue #16: 언론사 필터링을 위한 user_preferences 테이블 마이그레이션
         self._migrate_for_issue_16()
+
+        # ✅ Issue #36: user_feedback FOREIGN KEY 제약 조건 제거
+        self._migrate_remove_feedback_fk()
+
+        # ✅ 키워드 점수 컬럼 마이그레이션
+        self._migrate_keyword_score_column()
+
+        # ✅ 피드백 테이블에 제목/URL 컬럼 추가
+        self._migrate_feedback_title_url()
     
     def _update_schema_version(self) -> None:
         """스키마 버전 업데이트"""
@@ -369,40 +380,265 @@ class DatabaseManager:
                 print(f"❌ [Issue #16] 마이그레이션 실패: {e}")
             conn.rollback()
 
+    def _migrate_remove_feedback_fk(self) -> None:
+        """
+        Issue #36: user_feedback 테이블의 FOREIGN KEY 제약 조건 제거
+
+        - FOREIGN KEY 제약이 있으면 텔레그램에서 전송된 기사(articles 테이블에 없음)에 피드백을 남길 수 없음
+        - 테이블을 재생성하여 FOREIGN KEY 제약 제거
+        """
+        conn = self._get_connection()
+        cursor = conn.cursor()
+
+        try:
+            # FOREIGN KEY 확인
+            cursor.execute("PRAGMA foreign_key_list(user_feedback)")
+            fk_list = cursor.fetchall()
+
+            if not fk_list:
+                # 이미 FOREIGN KEY가 없으면 스킵
+                return
+
+            # 기존 데이터 백업
+            cursor.execute("SELECT * FROM user_feedback")
+            backup_data = cursor.fetchall()
+
+            # 테이블 삭제
+            cursor.execute("DROP TABLE IF EXISTS user_feedback")
+
+            # FOREIGN KEY 없이 재생성
+            cursor.execute("""
+                CREATE TABLE user_feedback (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    chat_id INTEGER NOT NULL,
+                    article_id TEXT NOT NULL,
+                    feedback_type TEXT NOT NULL,
+                    feedback_value INTEGER,
+                    comment TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE(chat_id, article_id, feedback_type)
+                )
+            """)
+
+            # 인덱스 재생성
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_user_feedback_chat
+                ON user_feedback(chat_id)
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_user_feedback_article
+                ON user_feedback(article_id)
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_user_feedback_type
+                ON user_feedback(feedback_type)
+            """)
+
+            # 데이터 복원
+            if backup_data:
+                cursor.executemany(
+                    """
+                    INSERT INTO user_feedback
+                    (id, chat_id, article_id, feedback_type, feedback_value, comment, created_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    backup_data
+                )
+
+            conn.commit()
+            # print("[Issue #36] user_feedback FOREIGN KEY 제약 조건 제거 완료")
+
+        except Exception as e:
+            # print(f"[Issue #36] 마이그레이션 실패: {e}")
+            conn.rollback()
+
+    def _migrate_keyword_score_column(self) -> None:
+        """
+        키워드 점수 컬럼 마이그레이션
+
+        - user_keywords 테이블에 score, updated_at 컬럼 추가
+        - 기존 +/- 접두사가 있는 키워드 데이터 정리
+        """
+        conn = self._get_connection()
+        cursor = conn.cursor()
+
+        try:
+            # 1. 컬럼 존재 여부 확인
+            cursor.execute("PRAGMA table_info(user_keywords)")
+            columns = {row[1] for row in cursor.fetchall()}
+
+            if 'score' not in columns:
+                # 2. score, updated_at 컬럼 추가
+                conn.execute("ALTER TABLE user_keywords ADD COLUMN score INTEGER DEFAULT 1")
+                # SQLite는 DEFAULT CURRENT_TIMESTAMP를 ALTER TABLE에서 지원 안함
+                conn.execute("ALTER TABLE user_keywords ADD COLUMN updated_at TIMESTAMP")
+
+                # 3. 기존 데이터에서 +/- 접두사 처리
+                cursor.execute("SELECT id, chat_id, keyword FROM user_keywords")
+                rows = cursor.fetchall()
+
+                for row_id, chat_id, keyword in rows:
+                    kw = keyword.strip()
+                    score = 1
+                    clean_kw = kw
+
+                    # +/- 접두사 처리
+                    if kw.startswith('-'):
+                        score = -1
+                        clean_kw = kw[1:].strip()
+                    elif kw.startswith('+'):
+                        score = 1
+                        clean_kw = kw[1:].strip()
+
+                    # 정리된 키워드와 점수로 업데이트
+                    if clean_kw != kw:
+                        cursor.execute(
+                            "UPDATE user_keywords SET keyword = ?, score = ? WHERE id = ?",
+                            (clean_kw, score, row_id)
+                        )
+
+                # 4. 같은 chat_id, keyword 조합이 중복되면 점수 합산 후 하나만 남기기
+                cursor.execute("""
+                    SELECT chat_id, keyword, GROUP_CONCAT(id), SUM(score)
+                    FROM user_keywords
+                    GROUP BY chat_id, keyword
+                    HAVING COUNT(*) > 1
+                """)
+                duplicates = cursor.fetchall()
+
+                for chat_id, keyword, ids, total_score in duplicates:
+                    id_list = ids.split(',')
+                    keep_id = id_list[0]  # 첫 번째 ID만 유지
+                    delete_ids = id_list[1:]  # 나머지 삭제
+
+                    # 점수 업데이트
+                    cursor.execute(
+                        "UPDATE user_keywords SET score = ? WHERE id = ?",
+                        (total_score, keep_id)
+                    )
+
+                    # 중복 삭제
+                    for del_id in delete_ids:
+                        cursor.execute("DELETE FROM user_keywords WHERE id = ?", (del_id,))
+
+                conn.commit()
+
+        except sqlite3.OperationalError as e:
+            if "duplicate column name" not in str(e):
+                pass  # 조용히 무시
+            conn.rollback()
+        except Exception as e:
+            pass  # 조용히 무시
+            conn.rollback()
+
+
+    def _migrate_feedback_title_url(self) -> None:
+        """
+        피드백 테이블에 article_title, article_url 컬럼 추가
+        """
+        conn = self._get_connection()
+        cursor = conn.cursor()
+
+        try:
+            # 컬럼 존재 여부 확인
+            cursor.execute("PRAGMA table_info(user_feedback)")
+            columns = {row[1] for row in cursor.fetchall()}
+
+            if 'article_title' not in columns:
+                conn.execute("ALTER TABLE user_feedback ADD COLUMN article_title TEXT")
+
+            if 'article_url' not in columns:
+                conn.execute("ALTER TABLE user_feedback ADD COLUMN article_url TEXT")
+
+            conn.commit()
+
+        except sqlite3.OperationalError as e:
+            if "duplicate column name" not in str(e):
+                pass  # 조용히 무시
+            conn.rollback()
+        except Exception as e:
+            pass  # 조용히 무시
+            conn.rollback()
 
     # ==================== 유저 키워드 관련 ====================
     
     def get_keywords(self, chat_id: int) -> List[str]:
-        """특정 chat_id의 모든 키워드 가져오기"""
+        """
+        특정 chat_id의 모든 키워드 가져오기 (하위 호환성 유지)
+
+        Returns:
+            키워드 리스트 (점수 정보 없음)
+        """
         conn = self._get_connection()
         cursor = conn.cursor()
-        
+
         cursor.execute(
             "SELECT keyword FROM user_keywords WHERE chat_id = ? ORDER BY created_at",
             (chat_id,)
         )
-        
+
         return [row[0] for row in cursor.fetchall()]
-    
-    def add_keyword(self, chat_id: int, keyword: str) -> bool:
+
+    def get_keywords_with_scores(self, chat_id: int) -> Dict[str, int]:
         """
-        키워드 추가
-        
+        특정 chat_id의 모든 키워드와 점수 가져오기
+
         Returns:
-            True if 새로 추가됨, False if 이미 존재함
+            {keyword: score} 딕셔너리
         """
         conn = self._get_connection()
         cursor = conn.cursor()
-        
+
+        cursor.execute(
+            "SELECT keyword, score FROM user_keywords WHERE chat_id = ? ORDER BY created_at",
+            (chat_id,)
+        )
+
+        return {row[0]: row[1] for row in cursor.fetchall()}
+    
+    def add_keyword(self, chat_id: int, keyword: str, score: int = 1) -> bool:
+        """
+        키워드 추가 또는 업데이트
+
+        Args:
+            chat_id: 텔레그램 chat ID
+            keyword: 키워드
+            score: 점수 (기본값 1)
+
+        Returns:
+            True if 새로 추가됨, False if 기존 키워드 업데이트됨
+        """
+        conn = self._get_connection()
+        cursor = conn.cursor()
+
         try:
-            cursor.execute(
-                "INSERT INTO user_keywords (chat_id, keyword) VALUES (?, ?)",
-                (chat_id, keyword)
-            )
+            # updated_at 컬럼이 있는지 확인
+            cursor.execute("PRAGMA table_info(user_keywords)")
+            columns = {row[1] for row in cursor.fetchall()}
+            has_updated_at = 'updated_at' in columns
+
+            if has_updated_at:
+                cursor.execute(
+                    """INSERT INTO user_keywords (chat_id, keyword, score)
+                       VALUES (?, ?, ?)
+                       ON CONFLICT(chat_id, keyword) DO UPDATE SET
+                       score = ?, updated_at = CURRENT_TIMESTAMP""",
+                    (chat_id, keyword, score, score)
+                )
+            else:
+                cursor.execute(
+                    """INSERT INTO user_keywords (chat_id, keyword, score)
+                       VALUES (?, ?, ?)
+                       ON CONFLICT(chat_id, keyword) DO UPDATE SET
+                       score = ?""",
+                    (chat_id, keyword, score, score)
+                )
+
             conn.commit()
-            return True
-        except sqlite3.IntegrityError:
-            # UNIQUE 제약 위반 (이미 존재)
+            # rowcount가 1이면 새로 추가, 2면 업데이트
+            return cursor.rowcount == 1
+        except Exception as e:
+            conn.rollback()
             return False
     
     def remove_keyword(self, chat_id: int, keyword: str) -> bool:
@@ -825,33 +1061,54 @@ class DatabaseManager:
         article_id: str,
         feedback_type: str,
         feedback_value: int = 0,
-        comment: str = ""
+        comment: str = "",
+        article_title: str = "",
+        article_url: str = ""
     ) -> bool:
         """
         유저 피드백 추가
-        
+
         Args:
             chat_id: 텔레그램 chat ID
             article_id: 기사 ID
             feedback_type: 피드백 타입 (like, dislike, bookmark, rating 등)
             feedback_value: 피드백 값 (예: 별점 1-5)
             comment: 추가 코멘트
-        
+            article_title: 기사 제목 (조회용)
+            article_url: 기사 URL (조회용)
+
         Returns:
             True if 성공
         """
         conn = self._get_connection()
         cursor = conn.cursor()
-        
+
+        # article_title, article_url 컬럼 존재 여부 확인
+        cursor.execute("PRAGMA table_info(user_feedback)")
+        columns = {row[1] for row in cursor.fetchall()}
+        has_title = 'article_title' in columns
+        has_url = 'article_url' in columns
+
         try:
-            cursor.execute(
-                """
-                INSERT OR REPLACE INTO user_feedback
-                (chat_id, article_id, feedback_type, feedback_value, comment)
-                VALUES (?, ?, ?, ?, ?)
-                """,
-                (chat_id, article_id, feedback_type, feedback_value, comment)
-            )
+            if has_title and has_url:
+                cursor.execute(
+                    """
+                    INSERT OR REPLACE INTO user_feedback
+                    (chat_id, article_id, feedback_type, feedback_value, comment, article_title, article_url)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (chat_id, article_id, feedback_type, feedback_value, comment, article_title, article_url)
+                )
+            else:
+                # 이전 버전 호환성
+                cursor.execute(
+                    """
+                    INSERT OR REPLACE INTO user_feedback
+                    (chat_id, article_id, feedback_type, feedback_value, comment)
+                    VALUES (?, ?, ?, ?, ?)
+                    """,
+                    (chat_id, article_id, feedback_type, feedback_value, comment)
+                )
             conn.commit()
             return True
         except Exception:
@@ -865,38 +1122,83 @@ class DatabaseManager:
         """특정 유저의 피드백 조회"""
         conn = self._get_connection()
         cursor = conn.cursor()
-        
-        if feedback_type:
-            cursor.execute(
-                """
-                SELECT article_id, feedback_type, feedback_value, comment, created_at
-                FROM user_feedback
-                WHERE chat_id = ? AND feedback_type = ?
-                ORDER BY created_at DESC
-                """,
-                (chat_id, feedback_type)
-            )
+
+        # article_title, article_url 컬럼 존재 여부 확인
+        cursor.execute("PRAGMA table_info(user_feedback)")
+        columns = {row[1] for row in cursor.fetchall()}
+        has_title = 'article_title' in columns
+        has_url = 'article_url' in columns
+
+        if has_title and has_url:
+            # 새 버전
+            if feedback_type:
+                cursor.execute(
+                    """
+                    SELECT article_id, feedback_type, feedback_value, comment, created_at, article_title, article_url
+                    FROM user_feedback
+                    WHERE chat_id = ? AND feedback_type = ?
+                    ORDER BY created_at DESC
+                    """,
+                    (chat_id, feedback_type)
+                )
+            else:
+                cursor.execute(
+                    """
+                    SELECT article_id, feedback_type, feedback_value, comment, created_at, article_title, article_url
+                    FROM user_feedback
+                    WHERE chat_id = ?
+                    ORDER BY created_at DESC
+                    """,
+                    (chat_id,)
+                )
+
+            return [
+                {
+                    "article_id": row[0],
+                    "feedback_type": row[1],
+                    "feedback_value": row[2],
+                    "comment": row[3],
+                    "created_at": row[4],
+                    "article_title": row[5] or "",
+                    "article_url": row[6] or ""
+                }
+                for row in cursor.fetchall()
+            ]
         else:
-            cursor.execute(
-                """
-                SELECT article_id, feedback_type, feedback_value, comment, created_at
-                FROM user_feedback
-                WHERE chat_id = ?
-                ORDER BY created_at DESC
-                """,
-                (chat_id,)
-            )
-        
-        return [
-            {
-                "article_id": row[0],
-                "feedback_type": row[1],
-                "feedback_value": row[2],
-                "comment": row[3],
-                "created_at": row[4]
-            }
-            for row in cursor.fetchall()
-        ]
+            # 이전 버전 호환성
+            if feedback_type:
+                cursor.execute(
+                    """
+                    SELECT article_id, feedback_type, feedback_value, comment, created_at
+                    FROM user_feedback
+                    WHERE chat_id = ? AND feedback_type = ?
+                    ORDER BY created_at DESC
+                    """,
+                    (chat_id, feedback_type)
+                )
+            else:
+                cursor.execute(
+                    """
+                    SELECT article_id, feedback_type, feedback_value, comment, created_at
+                    FROM user_feedback
+                    WHERE chat_id = ?
+                    ORDER BY created_at DESC
+                    """,
+                    (chat_id,)
+                )
+
+            return [
+                {
+                    "article_id": row[0],
+                    "feedback_type": row[1],
+                    "feedback_value": row[2],
+                    "comment": row[3],
+                    "created_at": row[4],
+                    "article_title": "",
+                    "article_url": ""
+                }
+                for row in cursor.fetchall()
+            ]
     
     def get_article_feedback_stats(self, article_id: str) -> Dict[str, Any]:
         """특정 기사의 피드백 통계"""

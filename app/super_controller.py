@@ -46,7 +46,9 @@ class SuperController:
         self._score_rules: dict[str, Any] = {}
         self._admin_keywords: dict[str, int] = {}
         self._news_page_size: int = 10
-        self._rss_auto_interval: int = 10
+        self._rss_auto_interval: int = 120  # Issue #36: RSS 자동 알림 간격 (2분)
+        self._newsapi_interval: int = 600  # Issue #36: NewsAPI 폴링 간격 (10분)
+        self._newsapi_daily_limit: int = 100  # Issue #36: NewsAPI 하루 호출 제한
         self._start_message: str = DEFAULT_START_MESSAGE
         
         # 클러스터링 설정
@@ -147,8 +149,13 @@ class SuperController:
         news_conf = self._config.get("news", {}) if isinstance(self._config, dict) else {}
         self._news_page_size = int(news_conf.get("page_size", 10))
 
+        # Issue #36: RSS 및 NewsAPI 설정 로드
         rss_conf = self._config.get("rss", {}) if isinstance(self._config, dict) else {}
-        self._rss_auto_interval = int(rss_conf.get("auto_interval", 10))
+        self._rss_auto_interval = int(rss_conf.get("auto_interval", 120))  # RSS 자동 알림 간격 (2분)
+
+        newsapi_conf = self._config.get("newsapi", {}) if isinstance(self._config, dict) else {}
+        self._newsapi_interval = int(newsapi_conf.get("polling_interval", 600))  # NewsAPI 폴링 간격 (10분)
+        self._newsapi_daily_limit = int(newsapi_conf.get("daily_limit", 100))  # 하루 호출 제한
 
         bot_conf = self._config.get("bot", {}) if isinstance(self._config, dict) else {}
         self._start_message = str(bot_conf.get("start_message", DEFAULT_START_MESSAGE))
@@ -209,6 +216,14 @@ class SuperController:
 
     def get_rss_auto_interval(self) -> int:
         return int(self._rss_auto_interval)
+
+    def get_newsapi_interval(self) -> int:
+        """Issue #36: NewsAPI 폴링 간격 반환 (초)"""
+        return int(self._newsapi_interval)
+
+    def get_newsapi_daily_limit(self) -> int:
+        """Issue #36: NewsAPI 하루 호출 제한 반환"""
+        return int(self._newsapi_daily_limit)
 
     def get_start_message(self) -> str:
         return self._start_message

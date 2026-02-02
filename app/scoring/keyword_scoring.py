@@ -27,6 +27,8 @@ def _score_keywords(text: str, kw_scores: dict[str, int]) -> dict[str, int]:
 
 def _split_user_keywords(raw_keywords: list[str]) -> dict[str, int]:
     """
+    [더 이상 사용하지 않는 함수 - 하위 호환성 유지용]
+
     유저 키워드 규칙:
     - 그냥 "비트코인" -> +1
     - "+비트코인" -> +1
@@ -60,16 +62,33 @@ def _split_user_keywords(raw_keywords: list[str]) -> dict[str, int]:
     return scores
 
 
+def _get_user_keyword_scores(chat_id: int) -> dict[str, int]:
+    """
+    DB에서 유저 키워드 점수 가져오기 (새 방식)
+
+    Returns:
+        {keyword (lowercase): score} 딕셔너리
+    """
+    from app.database.db_manager import get_db
+
+    db = get_db()
+    keyword_scores = db.get_keywords_with_scores(chat_id)
+
+    # 소문자로 변환
+    return {kw.lower(): score for kw, score in keyword_scores.items()}
+
+
 def score_article_for_chat(article: dict, chat_id: int) -> ScoredArticle | None:
     """
     한 개 기사에 대해:
     - 유저별 화이트/블랙리스트 체크
-    - 유저 키워드 점수 (반복 추가 시 가중치 증가)
+    - 유저 키워드 점수 (DB에서 직접 가져오기)
     - 테마 키워드 점수 (기간 제한)
     - 분류별 점수
+    - 속보/단독 자동 점수 (Issue #36)
     """
-    from app.storage import get_keywords  # 순환 import 방지용 내부 import
     from app.database.db_manager import get_db
+    from app.scoring.breaking_detector import get_breaking_score
 
     db = get_db()
     scoring_settings = db.get_user_scoring_settings(chat_id)
@@ -94,14 +113,19 @@ def score_article_for_chat(article: dict, chat_id: int) -> ScoredArticle | None:
 
     matched: dict[str, int] = {}
 
-    # 1. 유저 키워드 스코어링 (가중치 반영)
-    raw_user_keywords = get_keywords(chat_id)
-    user_scores = _split_user_keywords(raw_user_keywords)
+    # 1. 속보/단독 자동 스코어링 (Issue #36)
+    title = article.get("title", "")
+    breaking_score = get_breaking_score(title)
+    if breaking_score > 0:
+        matched["[속보/단독]"] = breaking_score
+
+    # 2. 유저 키워드 스코어링 (DB에서 직접 가져오기)
+    user_scores = _get_user_keyword_scores(chat_id)
     user_matches = _score_keywords(text, user_scores)
     for k, v in user_matches.items():
         matched[k] = matched.get(k, 0) + v
 
-    # 2. 테마 키워드 스코어링 (기간 제한)
+    # 3. 테마 키워드 스코어링 (기간 제한)
     theme_keywords = scoring_settings["theme_keywords"]
     now = datetime.now(timezone.utc)
 
@@ -119,7 +143,7 @@ def score_article_for_chat(article: dict, chat_id: int) -> ScoredArticle | None:
     for k, v in theme_matches.items():
         matched[k] = matched.get(k, 0) + v
 
-    # 3. 분류별 스코어링
+    # 4. 분류별 스코어링
     sector_scores = scoring_settings["sector_scores"]
     primary_sector = article.get("primary_sector", "").lower()
     if primary_sector and primary_sector in sector_scores:

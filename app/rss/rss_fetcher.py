@@ -70,7 +70,7 @@ def _fetch_single_feed(url: str) -> tuple[List[dict], int, int]:
     """
     단일 RSS 피드를 가져오는 함수 (동기)
     스레드 풀에서 실행됨
-    
+
     Returns:
         (새 기사 목록, 전체 항목 수, 중복 항목 수)
     """
@@ -78,9 +78,10 @@ def _fetch_single_feed(url: str) -> tuple[List[dict], int, int]:
     new_articles: List[dict] = []
     total_entries = 0
     duplicate_count = 0
-    
+
     try:
-        feed = feedparser.parse(url)
+        # Issue #36: User-Agent 추가하여 RSS 차단 우회
+        feed = feedparser.parse(url, agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36')
         total_entries = len(feed.entries)
         
         for entry in feed.entries:
